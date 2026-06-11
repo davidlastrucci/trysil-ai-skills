@@ -1,0 +1,9 @@
+# Trysil - Delphi ORM
+
+> LLM skills for Trysil, the attribute-driven Delphi ORM: ORM, JSON and HTTP.
+
+## Skills
+
+- [trysil-orm](llm/trysil-orm.md): Use Trysil, a Delphi attribute-driven ORM, to model entities and run CRUD/queries. Invoke when writing or reviewing Delphi code that persists data with Trysil — TTContext, entity classes with [TTable]/[TColumn] attributes, TTConnection (SQLite/PostgreSQL/SQL Server/Firebird/InterBase/MariaDB/Oracle), TTFilterBuilder, TTSession, lazy loading, change tracking, or soft delete.
+- [trysil-json](llm/trysil-json.md): Serialize and deserialize Trysil entities to/from JSON using the Trysil.JSon module. Invoke when writing or reviewing Delphi code that uses TTJSonContext, TTJSonSerializerConfig, EntityToJSon/ListToJSon/EntityFromJSon, DatasetToJSon, or MetadataToJSon, or that exposes Trysil entities over JSON.
+- [trysil-http](llm/trysil-http.md): Build REST APIs over Trysil entities with the Trysil.Http module — attribute-routed controllers, TTHttpServer bootstrap, dependency-injected context, CORS, Basic/Bearer/Digest/JWT authentication, multi-tenant hosting, and JSON request/response. Invoke when writing or reviewing Delphi HTTP/REST code that uses TTHttpController, TTHttpServer, TTHttpContext, or the Trysil.Http.* attributes.

@@ -1,0 +1,281 @@
+---
+trigger: model_decision
+description: Use Trysil, a Delphi attribute-driven ORM, to model entities and run CRUD/queries. Invoke when writing or reviewing Delphi code that persists data with Trysil — TTContext, entity classes with [TTable]/[TColumn] attributes, TTConnection (SQLite/PostgreSQL/SQL Server/Firebird/InterBase/MariaDB/Oracle), TTFilterBuilder, TTSession, lazy loading, change tracking, or soft delete.
+---
+
+# Trysil ORM
+
+Trysil is a Delphi ORM. Entities are plain classes decorated with attributes; `TTContext` is the API; FireDAC is the data layer. Single-integer primary keys only, optimistic locking via a version column, RTTI required.
+
+## 1. Connection setup
+
+Pick the concrete driver class for the target database. Register the connection (once), then create instances.
+
+```delphi
+uses
+  Trysil.Data,
+  Trysil.Data.FireDAC.ConnectionPool,
+  Trysil.Data.FireDAC.SQLite;   // or .SqlServer, .PostgreSQL, .FirebirdSQL, .InterBase, .MariaDB, .Oracle
+
+// SQLite
+TTFireDACConnectionPool.Instance.Config.Enabled := False;
+TTSQLiteConnection.RegisterConnection('Test', ADatabaseFileName);
+FConnection := TTSQLiteConnection.Create('Test');
+
+// SQL Server (pooling on)
+TTFireDACConnectionPool.Instance.Config.Enabled := True;
+TTSqlServerConnection.RegisterConnection('Test', 'Server', 'user', 'pwd', 'DbName');
+FConnection := TTSqlServerConnection.Create('Test');
+
+// PostgreSQL
+TTPostgreSQLConnection.RegisterConnection('Pg', 'host', 5432, 'user', 'pwd', 'db');
+FConnection := TTPostgreSQLConnection.Create('Pg');
+```
+
+Declare the connection variable polymorphically as `TTConnection` (the abstract base), not as the concrete driver class.
+
+## 2. Context
+
+`TTContext` (`Trysil.Context`) is the entry point. Free the context before the connection.
+
+```delphi
+FConnection := TTSqlServerConnection.Create('Test');
+FContext := TTContext.Create(FConnection);
+// ... use ...
+FContext.Free;
+FConnection.Free;
+```
+
+Constructor overloads: `Create(AConnection)`, `Create(AConnection, AUseIdentityMap)`, `Create(AReadConnection, AWriteConnection)`, `Create(AReadConnection, AWriteConnection, AUseIdentityMap)`. The identity map is scoped to the context instance (safe for multi-tenant — no global state).
+
+## 3. Entity mapping
+
+```delphi
+unit Demo.Model;
+
+interface
+
+uses
+  System.SysUtils,
+  Trysil.Types,
+  Trysil.Attributes,
+  Trysil.Validation.Attributes;
+
+type
+  [TTable('Customers')]
+  [TSequence('CustomersID')]
+  TCustomer = class
+  strict private
+    [TColumn('ID')]
+    [TPrimaryKey]
+    FID: TTPrimaryKey;
+
+    [TColumn('CompanyName')]
+    [TRequired]
+    [TMaxLength(100)]
+    FCompanyName: String;
+
+    [TColumn('Email')]
+    [TMaxLength(255)]
+    [TEMail]
+    FEmail: String;
+
+    [TColumn('VersionID')]
+    [TVersionColumn]
+    FVersionID: TTVersion;
+  public
+    property ID: TTPrimaryKey read FID;
+    property CompanyName: String read FCompanyName write FCompanyName;
+    property Email: String read FEmail write FEmail;
+    property VersionID: TTVersion read FVersionID;
+  end;
+```
+
+Key attributes: `[TTable('name')]`, `[TPrimaryKey]`, `[TColumn('col')]`, `[TVersionColumn]`, `[TSequence('seqID')]`, `[TRelation('Table','FK',OwnsObjects)]`, `[TWhereClause('sql')]` + `[TWhereClauseParameter('name', value)]` (compile-time constants only — for runtime filtering use `TTFilterBuilder<T>`).
+
+Add `{$WARN UNKNOWN_CUSTOM_ATTRIBUTE ERROR}` to units that use Trysil attributes — Trysil resolves attributes via RTTI, so a misspelled attribute name compiles silently otherwise; this turns the typo into a compile error.
+
+### Type system (`Trysil.Types`)
+- `TTPrimaryKey` = `Int32` (single-integer PKs only).
+- `TTVersion` = `Int32` (optimistic locking).
+- `TTNullable<T>` — generic nullable wrapper, **no default constructor**; uninitialized = null. Set with `TTNullable<T>.Create(value)`. Read via `.HasValue` / `.Value`.
+
+### Mapping is cached
+`TTMapper.Instance` is a global singleton converting classes to `TTTableMap` on first access.
+
+## 4. CRUD
+
+`SelectAll`/`Select` are **procedures** that fill a caller-owned list — they do not return one.
+
+```delphi
+uses Trysil.Context, Trysil.Generics.Collections;
+
+// Read all
+LList := TTList<TCustomer>.Create;
+try
+  FContext.SelectAll<TCustomer>(LList);
+finally
+  LList.Free;
+end;
+
+// Get by PK (nil if missing) / TryGet
+LCustomer := FContext.Get<TCustomer>(AID);
+if FContext.TryGet<TCustomer>(AID, LCustomer) then ...;
+
+// Insert — use CreateEntity to get a valid sequence-assigned ID up front
+LCustomer := FContext.CreateEntity<TCustomer>();
+LCustomer.CompanyName := 'Acme';
+FContext.Insert<TCustomer>(LCustomer);
+
+// Update / Delete
+FContext.Update<TCustomer>(LCustomer);
+FContext.Delete<TCustomer>(LCustomer);
+
+// Save = insert-or-update (tracked via TTNewEntityCache)
+FContext.Save<TCustomer>(LCustomer);
+
+// Batch — all three lists in one transaction
+FContext.ApplyAll<TCustomer>(LInsertList, LUpdateList, LDeleteList);
+```
+
+Notes:
+- `CreateEntity<T>` returns an entity with the sequence ID already assigned (never ID=0) — no post-`Save` FK patching needed.
+- `Update<T>` rewrites the whole row (no per-field diff); it emits an UPDATE even if nothing changed.
+- When the identity map is on, the context **owns** the entities it returns — do not free them yourself.
+- To refresh an entity you already hold, prefer `Refresh<T>(entity)` over `Get<T>(id)`.
+
+## 5. TTFilterBuilder<T>
+
+Lives in `Trysil.Filter`. Obtain via `CreateFilterBuilder<T>`, chain, `Build` to a `TTFilter`, pass to `Select`. Free the builder; the `TTFilter` is a value record.
+
+```delphi
+LBuilder := FContext.CreateFilterBuilder<TCustomer>();
+try
+  LFilter := LBuilder
+    .Where('CompanyName').Like('Acme%')
+    .AndWhere('Email').IsNotNull
+    .OrderByAsc('CompanyName')
+    .Limit(20).Offset(0)
+    .Build;
+finally
+  LBuilder.Free;
+end;
+
+LList := TTList<TCustomer>.Create;
+try
+  FContext.Select<TCustomer>(LList, LFilter);
+finally
+  LList.Free;
+end;
+```
+
+Conditions: `Equal`, `NotEqual`, `Greater`, `GreaterOrEqual`, `Less`, `LessOrEqual`, `Like`, `NotLike`, `IsNull`, `IsNotNull`. Combine with `Where`/`AndWhere`/`OrWhere`. Paging/order: `OrderByAsc`/`OrderByDesc`, `Limit`, `Offset`. Use `TTFilter.Empty` for "no filter" and `SelectCount<T>(AFilter)` for counts.
+
+## 6. Lazy loading (`Trysil.Lazy`)
+
+`TTLazy<T>` (N:1) and `TTLazyList<T>` (1:N). **Never** create or free these manually and never add a separate `FxxxID` field — the framework instantiates and releases them via RTTI and triggers reload when `.ID` is set. Expose plain-typed properties through getters.
+
+```delphi
+[TTable('Orders')]
+[TSequence('OrdersID')]
+[TRelation('OrderDetails', 'OrderID', True)]
+TOrder = class
+strict private
+  [TColumn('ID')]
+  [TPrimaryKey]
+  FID: TTPrimaryKey;
+
+  [TColumn('CustomerID')]
+  [TRequired]
+  FCustomer: TTLazy<TCustomer>;
+
+  [TDetailColumn('ID', 'OrderID')]
+  FDetail: TTLazyList<TOrderDetail>;
+
+  [TColumn('VersionID')]
+  [TVersionColumn]
+  FVersionID: TTVersion;
+
+  function GetCustomer: TCustomer;
+  procedure SetCustomer(const AValue: TCustomer);
+  function GetDetail: TTList<TOrderDetail>;
+public
+  property Customer: TCustomer read GetCustomer write SetCustomer;
+  property Detail: TTList<TOrderDetail> read GetDetail;
+  property VersionID: TTVersion read FVersionID;
+end;
+
+// getters
+function TOrder.GetCustomer: TCustomer;
+begin
+  result := FCustomer.Entity;       // loads on first access
+end;
+
+procedure TOrder.SetCustomer(const AValue: TCustomer);
+begin
+  FCustomer.Entity := AValue;
+end;
+
+function TOrder.GetDetail: TTList<TOrderDetail>;
+begin
+  result := FDetail.List;
+end;
+```
+
+## 7. TTSession<T> — Unit of Work (`Trysil.Session`)
+
+Clones entities on creation; compares clones to originals on `ApplyChanges`. Full cloning is the only correct implementation in Delphi (no dynamic proxies). The session has explicit state per entity (Original/Inserted/Updated/Deleted); cloning gives isolation, not field-level diffing.
+
+```delphi
+LSession := FContext.CreateSession<TCustomer>(LList);
+try
+  LNew := FContext.CreateEntity<TCustomer>();
+  LNew.CompanyName := 'New';
+  LSession.Insert(LNew);
+
+  LSession.Entities[0].CompanyName := 'Changed';
+  LSession.Update(LSession.Entities[0]);
+
+  LSession.Delete(LSession.Entities[1]);
+
+  LSession.ApplyChanges;            // one transaction
+finally
+  LSession.Free;
+end;
+```
+
+## 8. Change tracking & soft delete
+
+Attribute pairs auto-populated by the resolver. `*At` fields are `TTNullable<TDateTime>`; `*By` fields are `String` and require `TTContext.OnGetCurrentUser: TFunc<String>` (empty string if unassigned).
+
+| Attribute | Fired on |
+|---|---|
+| `[TCreatedAt]` / `[TCreatedBy]` | Insert |
+| `[TUpdatedAt]` / `[TUpdatedBy]` | Update |
+| `[TDeletedAt]` / `[TDeletedBy]` | Delete (soft) |
+
+With `[TDeletedAt]` present, `Delete<T>` does **not** issue SQL DELETE — it UPDATEs `DeletedAt`/`DeletedBy` and bumps the version. All SELECTs add `DeletedAt IS NULL`. To include soft-deleted rows: `TTFilter.IncludeDeleted := True` or `.IncludeDeleted` on the builder.
+
+## 9. JOIN queries (read-only)
+
+`[TJoin(Kind, 'Table'[, 'Alias'][, 'SourceTableOrAlias'], 'SourceCol', 'TargetCol')]` (`TJoinKind` = `Inner`/`Left`/`Right`) plus the 2-arg `[TColumn('Alias','Col')]`. Join entities are read-only — `Insert`/`Update`/`Delete` raise `ETException`. `TTFilterBuilder` does not resolve join aliases; use `TTFilter.Create(whereClause)` with manually qualified column names.
+
+## 10. Raw select
+
+For SQL attributes can't express (subqueries, UNION, GROUP BY, aggregates), map raw results to a DTO whose fields carry only `[TColumn('ResultColName')]`:
+
+```delphi
+Context.RawSelect<TOrderSummary>(
+  'SELECT c.CompanyName AS CustomerName, SUM(o.Amount) AS Total ' +
+  'FROM Orders o JOIN Customers c ON o.CustomerID = c.ID GROUP BY c.CompanyName',
+  LResult);
+```
+
+Read-only, no identity map, no lazy loading.
+
+## Architectural facts worth knowing
+- `TTContext` delegates reads to `TTProvider` and writes to `TTResolver`.
+- Validation attributes (`Trysil.Validation.Attributes`) collect into `TTValidationErrors`, raising `ETValidationException`. Custom validators via `[BeforeInsert]`/`[BeforeUpdate]` methods.
+- Events: Before/After Insert/Update/Delete, declared via attributes.
+- `TTUpdateMode`: `KeyAndVersionColumn` (default, optimistic lock) vs `KeyOnly` (table without `[TVersionColumn]`).
+- Interfaces in Delphi cannot have generic methods, so `TTContext`/`TTProvider`/`TTResolver` are concrete classes by necessity — test via SQLite in-memory, not mocks.
