@@ -94,6 +94,9 @@ type
 
 Key attributes: `[TTable('name')]`, `[TPrimaryKey]`, `[TColumn('col')]`, `[TVersionColumn]`, `[TSequence('seqID')]`, `[TRelation('Table','FK',OwnsObjects)]`, `[TWhereClause('sql')]` + `[TWhereClauseParameter('name', value)]` (compile-time constants only — for runtime filtering use `TTFilterBuilder<T>`).
 
+### ID generation & `[TSequence]` per driver
+Keep `[TSequence('Name')]` on every entity regardless of the target database. SQLite has no sequence objects — Trysil computes the next ID with `IFNULL(MAX(ROWID), 0) + 1` — but the other supported drivers (PostgreSQL/SQL Server/Firebird/InterBase/MariaDB/Oracle) rely on real sequences/identity. Leaving the attribute in place keeps the model portable: if you later switch driver, the sequence is already declared and nothing in the entity needs to change.
+
 Add `{$WARN UNKNOWN_CUSTOM_ATTRIBUTE ERROR}` to units that use Trysil attributes — Trysil resolves attributes via RTTI, so a misspelled attribute name compiles silently otherwise; this turns the typo into a compile error.
 
 ### Type system (`Trysil.Types`)
@@ -171,6 +174,30 @@ end;
 ```
 
 Conditions: `Equal`, `NotEqual`, `Greater`, `GreaterOrEqual`, `Less`, `LessOrEqual`, `Like`, `NotLike`, `IsNull`, `IsNotNull`. Combine with `Where`/`AndWhere`/`OrWhere`. Paging/order: `OrderByAsc`/`OrderByDesc`, `Limit`, `Offset`. Use `TTFilter.Empty` for "no filter" and `SelectCount<T>(AFilter)` for counts.
+
+## 5b. In-memory filtering — `TTList<T>.Where` (`Trysil.Generics.Collections`)
+
+`TTList<T>` (the list `SelectAll`/`Select` fill) descends from RTL `TList<T>` — index access, `Count`, and `for..in` all work. It adds a LINQ-style **lazy** filter for client-side use:
+
+```delphi
+TTPredicate<T> = reference to function(const AItem: T): Boolean;
+function TTList<T>.Where(const APredicate: TTPredicate<T>): ITEnumerable<T>;
+```
+
+`Where` returns a lazy `ITEnumerable<T>` (interface-based, ref-counted enumerator) yielding only matching items during enumeration — no intermediate list is built:
+
+```delphi
+for LCustomer in LList.Where(
+  function(const A: TCustomer): Boolean
+  begin
+    result := A.CompanyName.ToLower.Contains(LText);
+  end) do
+  // ...
+```
+
+`Where(nil)` enumerates everything. Use this to filter an **already-loaded** set (no DB round-trip, no raw SQL) — e.g. live search over a list held in memory; use `TTFilterBuilder<T>`/`TTFilter` when you want the database to do the filtering.
+
+Other types in the unit: `TTObjectList<T>` (owns items — frees on remove when `OwnsObjects`), `TTObjectLazyList<T>` (adds `IsValid` for lazy 1:N lists), `TTHashList<T>` (dictionary-backed set: `Add`/`Contains`/`Remove`).
 
 ## 6. Lazy loading (`Trysil.Lazy`)
 
