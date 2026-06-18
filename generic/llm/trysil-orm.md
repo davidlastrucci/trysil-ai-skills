@@ -239,7 +239,7 @@ Add `{$WARN UNKNOWN_CUSTOM_ATTRIBUTE ERROR}` to units that use Trysil attributes
 ### Type system (`Trysil.Types`)
 - `TTPrimaryKey` = `Int32` (single-integer PKs only).
 - `TTVersion` = `Int32` (optimistic locking).
-- `TTNullable<T>` - generic nullable wrapper, **no default constructor**; uninitialized = null. Set with `TTNullable<T>.Create(value)`. Read via `.HasValue` / `.Value`.
+- `TTNullable<T>` - generic nullable wrapper, **no default constructor**; uninitialized = null. Set with `TTNullable<T>.Create(value)`. Test for null with `.IsNull` (the property is `IsNull`, **not** `HasValue` - there is no `HasValue`; for "has a value" write `not X.IsNull`). Read the payload with `.Value` (or `.GetValueOrDefault`).
 
 ### Mapping is cached
 `TTMapper.Instance` is a global singleton converting classes to `TTTableMap` on first access.
@@ -332,6 +332,8 @@ end;
 ```
 
 Conditions: `Equal`, `NotEqual`, `Greater`, `GreaterOrEqual`, `Less`, `LessOrEqual`, `Like`, `NotLike`, `IsNull`, `IsNotNull`. Combine with `Where`/`AndWhere`/`OrWhere`. Paging/order: `OrderByAsc`/`OrderByDesc`, `Limit`, `Offset`. Use `TTFilter.Empty` for "no filter" and `SelectCount<T>(AFilter)` for counts.
+
+The value-taking conditions (`Equal`, `Greater`, `Like`, …) each take a single `const AValue: TTValue` parameter - there are **no** per-type overloads. `TTValue` accepts any scalar (`String`, `Integer`, `Double`, `Boolean`, `TDateTime`, …) by implicit conversion, so pass the value directly whatever its type: `.Where('Description').Equal('Widget')`, `.AndWhere('Price').Greater(5.0)`, `.AndWhere('BrandID').Equal(LBrand.ID)`.
 
 ## 5a. Expression API - grouped conditions (`Trysil.Filter.Expression`)
 
@@ -526,7 +528,16 @@ end;
 
 ## 8. Change tracking & soft delete
 
-Attribute pairs auto-populated by the resolver. `*At` fields are `TTNullable<TDateTime>`; `*By` fields are `String` and require the context **instance** property `OnGetCurrentUser: TFunc<String>` - assign it on the context *after* you create it (`Context.OnGetCurrentUser := ...`), not on the `TTContext` type (it is not a class-level member). Empty string if unassigned.
+Attribute pairs auto-populated by the resolver. `*At` fields are `TTNullable<TDateTime>`; `*By` fields are `String` and require the context **instance** property `OnGetCurrentUser: TFunc<String>` - assign it on the context *after* you create it, not on the `TTContext` type (it is not a class-level member). Empty string if unassigned. The property is a `TFunc<String>`, so assign an anonymous method:
+
+```delphi
+FContext := TTContext.Create(LConnection, True);
+FContext.OnGetCurrentUser :=
+  function: String
+  begin
+    Result := 'demo-user';   // your real current-user lookup here
+  end;
+```
 
 Expose every change-tracking column through a read-only property (as you do for `ID` / `VersionID`), the whole `*At` **and** `*By` set. The resolver writes these fields via RTTI, so a mapped private field you never reference from code draws a harmless `H2219 ... declared but never used` compiler hint; a read-only property both clears the hint and lets you read who/when.
 
