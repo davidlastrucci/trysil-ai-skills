@@ -1,0 +1,21 @@
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+
+# Editors / IDE
+.vs/
+.vscode/
+*.suo
+*.user
+*~
+*.bak
+*.tmp
+
+# Local tooling (not for publishing)
+/local/
+/tools/
