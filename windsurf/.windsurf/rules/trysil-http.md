@@ -1,0 +1,317 @@
+---
+trigger: model_decision
+description: Build REST APIs over Trysil entities with the Trysil.Http module - attribute-routed controllers, TTHttpServer bootstrap, dependency-injected context, CORS, Basic/Bearer/Digest/JWT authentication, multi-tenant hosting, and JSON request/response. Invoke when writing or reviewing Delphi HTTP/REST code that uses TTHttpController, TTHttpServer, TTHttpContext, or the Trysil.Http.* attributes.
+---
+
+# Trysil HTTP
+
+REST hosting with attribute-based routing on top of the JSON module. `TTHttpContext` (`Trysil.Http.Context`) extends `TTJSonContext` (which extends `TTContext`), so controllers have the full ORM + JSON API. Read **trysil-orm** and **trysil-json** first - their APIs apply here.
+
+**Which unit declares what** (in addition to the trysil-orm and trysil-json units):
+
+| Type(s) | Unit |
+|---|---|
+| `TTHttpServer<C>` | `Trysil.Http` |
+| `TTHttpController<C>` | `Trysil.Http.Controller` |
+| `TTHttpContext` | `Trysil.Http.Context` |
+| `TTHttpRequest`, `TTHttpResponse`, `TTHttpUser` | `Trysil.Http.Classes` |
+| `[TUri]`, `[TGet]`, `[TPost]`, `[TPut]`, `[TDelete]`, `[TArea]`, `[TAuthorizationType]` | `Trysil.Http.Attributes` |
+| `TTHttpAuthorizationType` | `Trysil.Http.Types` |
+| CORS config (`FServer.CorsConfig`) | `Trysil.Http.Cors` |
+| `TTHttpAuthenticationBasic`/`Bearer`/`Digest<C>` | `Trysil.Http.Authentication.{Basic,Bearer,Digest}` |
+| `TTHttpJWT<P>`, `TTHttpJWTAbstractPayload` | `Trysil.Http.JWT` |
+| `TTHttpFilter<T>` | `Trysil.Http.Filter` |
+| `TTMultiTenant<T>`, `TTTenantConfig` | `Trysil.Http.MultiTenant` |
+| `TTHttpLogAbstractWriter` | `Trysil.Http.Log.Writer` |
+| `ETHttpException` + `ETHttp*` subclasses | `Trysil.Http.Exceptions` |
+
+## Architecture
+
+- `TTHttpServer<C>` - the server. `C` is your **per-request context type** (holds the connection + `TTHttpContext`, injected into every controller).
+- `TTHttpController<C>` - base controller. Has `FContext: C`, `FRequest: TTHttpRequest`, `FResponse: TTHttpResponse`.
+- Routing comes from attributes on controller methods. One controller class can be registered under a URI prefix; generic controllers (`TController<T>`) let one class serve many entity types.
+
+## 1. Per-request context (dependency injection target)
+
+The server constructs one of these per request and passes it to the controller. It owns the connection and the `TTHttpContext`.
+
+```delphi
+TAPIContext = class
+strict private
+  FConnection: TTConnection;
+  FContext: TTHttpContext;
+public
+  constructor Create;
+  destructor Destroy; override;
+
+  property Context: TTHttpContext read FContext;
+end;
+
+constructor TAPIContext.Create;
+begin
+  inherited Create;
+  TTFireDACConnectionPool.Instance.Config.Enabled := True;
+  FConnection := TTSqlServerConnection.Create(TAPIConfig.Instance.Database.ConnectionName);
+  FContext := TTHttpContext.Create(FConnection);
+end;
+
+destructor TAPIContext.Destroy;
+begin
+  FContext.Free;
+  FConnection.Free;
+  inherited Destroy;
+end;
+```
+
+## 2. Controllers & routing attributes
+
+Attributes from `Trysil.Http.Attributes`:
+
+| Attribute | Scope | Meaning |
+|---|---|---|
+| `[TUri('/prefix')]` | class | URI prefix for the controller |
+| `[TGet]` / `[TGet('/sub')]` | method | maps GET (optionally a sub-path) |
+| `[TPost]` / `[TPost('/sub')]` | method | maps POST |
+| `[TPut]` / `[TPut('/sub')]` | method | maps PUT |
+| `[TDelete]` / `[TDelete('/?/?')]` | method | maps DELETE |
+| `[TArea('name')]` | method | required user area/permission |
+| `[TAuthorizationType(TTHttpAuthorizationType.None)]` | class/method | bypass auth (e.g. login) |
+
+`?` segments are positional path parameters bound to the method's parameters in order. `/?` → one param, `/?/?` → two.
+
+```delphi
+TAPIReadOnlyController<T: class> = class(TAPIController)
+public
+  [TGet]
+  [TArea('read')]
+  procedure SelectAll;
+
+  [TGet('/?')]
+  [TArea('read')]
+  procedure Get(const AID: TTPrimaryKey);
+
+  [TPost('/select')]
+  [TArea('read')]
+  procedure Select;                 // body carries a JSON filter
+
+  [TGet('/metadata')]
+  [TArea('read')]
+  procedure Metadata;
+end;
+
+TAPIReadWriteController<T: class> = class(TAPIReadOnlyController<T>)
+public
+  [TPost]
+  [TArea('write')]
+  procedure Insert;
+
+  [TPut]
+  [TArea('write')]
+  procedure Update;
+
+  [TDelete('/?/?')]
+  [TArea('write')]
+  procedure Delete(const AID: TTPrimaryKey; const AVersionID: TTVersion);
+end;
+```
+
+Implementations use the injected context and write `FResponse.Content`:
+
+```delphi
+procedure TAPIReadWriteController<T>.Insert;
+var
+  LEntity: T;
+begin
+  LEntity := Context.EntityFromJSonObject<T>(FRequest.JSonContent);
+  try
+    if Context.GetID<T>(LEntity) <= 0 then
+      Context.SetSequenceID<T>(LEntity);
+    Context.Insert<T>(LEntity);
+    FResponse.Content := Context.EntityToJSon<T>(LEntity, ConfigGet);
+  finally
+    LEntity.Free;
+  end;
+end;
+
+procedure TAPIReadWriteController<T>.Delete(
+  const AID: TTPrimaryKey; const AVersionID: TTVersion);
+begin
+  Context.Delete<T>(AID, AVersionID);
+end;
+```
+
+## 3. Request / response (`Trysil.Http.Classes`)
+
+**Request** - read input:
+- `FRequest.JSonContent: TJSonValue` - parsed body. `FRequest.JSonContent.GetValue<String>('username', '')`.
+- `FRequest.Parameters` - query params; `FRequest.Headers`; `FRequest.User` (username/password/areas); `FRequest.RemoteIP`.
+
+**Response** - write output:
+- `FResponse.Content: String` - body (typically JSON).
+- `FResponse.StatusCode`, `FResponse.ContentType`, `FResponse.AddHeader(name, value)`, `FResponse.ContentStream` (for binary).
+
+## 4. Server bootstrap
+
+```delphi
+FServer := TTHttpServer<TAPIContext>.Create;
+FServer.BaseUri := '/api';
+FServer.Port := 8022;
+
+FServer.CorsConfig.AllowHeaders := 'Content-Type, Authorization';
+FServer.CorsConfig.AllowOrigin := '*';
+
+TTSqlServerConnection.RegisterConnection('Api', 'Server', 'user', 'pwd', 'Db');
+
+FServer.RegisterLogWriter<TAPILogWriter>();
+FServer.RegisterAuthentication<TAPIAuthentication>();
+
+FServer.RegisterController<TAPILogonController>();
+FServer.RegisterController<TAPIReadWriteController<TCompany>>('/company');
+FServer.RegisterController<TAPIReadWriteController<TEmployee>>('/employee');
+
+FServer.Start;
+// ...
+FServer.Stop;
+```
+
+Routes produced by `TAPIReadWriteController<TCompany>` under `/company`:
+
+```
+GET    /company              -> SelectAll
+GET    /company/123          -> Get(123)
+POST   /company/select       -> Select  (JSON filter in body)
+GET    /company/metadata     -> Metadata
+POST   /company              -> Insert
+PUT    /company              -> Update
+DELETE /company/123/1        -> Delete(123, version 1)
+```
+
+## 5. CORS (`Trysil.Http.Cors`)
+
+Set `FServer.CorsConfig.AllowHeaders` / `AllowOrigin`. The server adds CORS headers and handles OPTIONS preflight per registered controller automatically.
+
+## 6. Authentication (`Trysil.Http.Authentication.*`)
+
+Subclass the scheme you want, override the validation hooks, register one implementation with `RegisterAuthentication<H>()`. Mark public endpoints (login) with `[TAuthorizationType(TTHttpAuthorizationType.None)]`.
+
+- **Basic** - `TTHttpAuthenticationBasic<C>`: override `IsValid(const AUser: TTHttpUser): Boolean`, set `Realm`.
+- **Bearer/JWT** - `TTHttpAuthenticationBearer<C, P: TTHttpJWTAbstractPayload>`: override `CreatePayload` and `IsValid(const APayload: P)`.
+- **Digest** - `TTHttpAuthenticationDigest<C>`: override `GetNonce`, `IsValidNonce`, `GetUserMD5`.
+
+### JWT (`Trysil.Http.JWT`)
+
+Define a payload by subclassing `TTHttpJWTAbstractPayload` (override `GetSecret`, `ToJSon`, `FromJSon`). Encode/verify with `TTHttpJWT<P>`:
+
+```delphi
+LJWT := TTHttpJWT<TAPIJWTPayload>.Create(LPayload);
+try
+  LToken := LJWT.ToToken();          // create token at login
+  // LJWT.LoadFromToken(AToken) returns False if signature/format invalid
+finally
+  LJWT.Free;
+end;
+```
+
+Bearer auth example wiring:
+
+```delphi
+TAPIAuthentication = class(TTHttpAuthenticationBearer<TAPIContext, TAPIJWTPayload>)
+strict protected
+  function CreatePayload: TAPIJWTPayload; override;
+  function IsValid(const APayload: TAPIJWTPayload): Boolean; override;
+end;
+
+function TAPIAuthentication.IsValid(const APayload: TAPIJWTPayload): Boolean;
+begin
+  result := APayload.IsValid;
+  if result then
+  begin
+    FRequest.User.Username := APayload.Username;
+    // copy areas into FRequest.User.Areas for [TArea] checks
+  end;
+end;
+```
+
+Do not hardcode JWT secrets in shipping code; read them from configuration.
+
+## 7. Server-side filtering from JSON (`Trysil.Http.Filter`)
+
+`TTHttpFilter<T>` turns a JSON body into a `TTFilter`, validating column names and conditions against entity metadata.
+
+```delphi
+procedure TAPIReadOnlyController<T>.Select;
+var
+  LHttpFilter: TTHttpFilter<T>;
+begin
+  LHttpFilter := TTHttpFilter<T>.Create(Context, FRequest.JSonContent);
+  InternalSelect(LHttpFilter.Filter);
+end;
+```
+
+Expected JSON shape:
+
+```json
+{
+  "where":  [ { "columnName": "Name", "condition": "LIKE", "value": "%Test%" } ],
+  "orderBy":[ { "columnName": "Name", "direction": "ASC" } ],
+  "start": 0,
+  "limit": 10
+}
+```
+
+Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`.
+
+## 8. Multi-tenant (`Trysil.Http.MultiTenant`)
+
+`TTMultiTenant<T: TTTenantConfig>` is a thread-safe singleton mapping a tenant name to a `TTTenant<T>` (its own config + connection). Subclass `TTTenantConfig` (override `GetConnectionName`, `GetParameters`); in your per-request context resolve the tenant (e.g. from a header) via `TTMultiTenant<T>.Instance.GetOrAdd(name)` and build the `TTHttpContext` on `tenant.Connection.CreateConnection`.
+
+## 9. Logging
+
+Subclass `TTHttpLogAbstractWriter` (override `WriteAction`/`WriteRequest`/`WriteResponse`) and register with `RegisterLogWriter<W>()`. The writer can persist log rows through its own Trysil context.
+
+## 10. Errors & HTTP status codes
+
+The listener catches every exception centrally and turns it into the JSON response. The mapping is **narrow** - know it exactly:
+
+- `ETHttpException` and its subclasses (`Trysil.Http.Exceptions`) carry a status code, used as-is:
+
+  | Exception | Status |
+  |---|---|
+  | `ETHttpBadRequest` | 400 |
+  | `ETHttpUnauthorized` | 401 |
+  | `ETHttpForbidden` | 403 |
+  | `ETHttpNotFound` | 404 |
+  | `ETHttpMethodNotAllowed` | 405 |
+  | `ETHttpInternalServerError` | 500 |
+  | `ETHttpException.Create(code, msg)` | any code you pass |
+
+- **Every other exception becomes HTTP 500** - including the ORM's `ETValidationException`, `ETConcurrentUpdateException`, and `ETDataIntegrityException`. There is **no automatic ORM-to-HTTP mapping**. To return 400 on a failed validation or 409 on a version conflict, catch the ORM exception in the controller and re-raise as an `ETHttp*` (or `ETHttpException` with an explicit code - there is no 409 constant):
+
+```delphi
+procedure TAPIReadWriteController<T>.Update;
+var
+  LEntity: T;
+begin
+  LEntity := Context.EntityFromJSonObject<T>(FRequest.JSonContent);
+  try
+    try
+      Context.Update<T>(LEntity);
+      FResponse.Content := Context.EntityToJSon<T>(LEntity, ConfigGet);
+    except
+      on E: ETValidationException do
+        raise ETHttpBadRequest.Create(E.Message);            // 400
+      on E: ETConcurrentUpdateException do
+        raise ETHttpException.Create(409, E.Message);          // 409 Conflict
+    end;
+  finally
+    LEntity.Free;
+  end;
+end;
+```
+
+- On success the status is always **200 OK** (the `201 Created` constant exists but is unused). Set `FResponse.StatusCode` yourself for a different success code.
+
+## Lifecycle reminders
+- One `TAPIContext` (connection + `TTHttpContext`) is created and destroyed **per request** - keep `Create` cheap (assignments/object creation only; heavier work in `AfterConstruction`).
+- Always free entities you deserialize (`EntityFromJSonObject`) and lists you build inside handlers.
+- `TTHttpContext` never uses the identity map (inherited constraint from `TTJSonContext`).
