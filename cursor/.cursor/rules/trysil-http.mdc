@@ -20,7 +20,10 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 | `TTHttpAuthorizationType` | `Trysil.Http.Types` |
 | CORS config (`FServer.CorsConfig`) | `Trysil.Http.Cors` |
 | `TTHttpAuthenticationBasic`/`Bearer`/`Digest<C>` | `Trysil.Http.Authentication.{Basic,Bearer,Digest}` |
-| `TTHttpJWT<P>`, `TTHttpJWTAbstractPayload` | `Trysil.Http.JWT` |
+| `TTHttpJWT<P>` | `Trysil.Http.JWT` |
+| `TTHttpJWTAbstractPayload`, `ETHttpJWTException` | `Trysil.Http.JWT.Payload` |
+| `TTHttpJWTHS256Payload` | `Trysil.Http.JWT.Payload.HS256` |
+| `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` |
 | `TTHttpFilter<T>` | `Trysil.Http.Filter` |
 | `TTMultiTenant<T>`, `TTTenantConfig` | `Trysil.Http.MultiTenant` |
 | `TTHttpLogAbstractWriter` | `Trysil.Http.Log.Writer` |
@@ -145,7 +148,8 @@ end;
 
 **Request** - read input:
 - `FRequest.JSonContent: TJSonValue` - parsed body. `FRequest.JSonContent.GetValue<String>('username', '')`.
-- `FRequest.Parameters` - query params; `FRequest.Headers`; `FRequest.User` (username/password/areas); `FRequest.RemoteIP`.
+- `FRequest.Parameters` - query params; `FRequest.Headers`; `FRequest.User` (username/password/areas).
+- `FRequest.RemoteIP` - TCP peer address. `FRequest.ClientIP` - originating caller: same as `RemoteIP` for direct connections, but when the peer is loopback (local reverse proxy) it returns the last `X-Forwarded-For` entry, port and IPv6 brackets stripped. Use `ClientIP` for audit and rate limiting.
 
 **Response** - write output:
 - `FResponse.Content: String` - body (typically JSON).
@@ -201,7 +205,20 @@ Subclass the scheme you want, override the validation hooks, register one implem
 
 ### JWT (`Trysil.Http.JWT`)
 
-Define a payload by subclassing `TTHttpJWTAbstractPayload` (override `GetSecret`, `ToJSon`, `FromJSon`). Encode/verify with `TTHttpJWT<P>`:
+The payload is also the signer. Subclass the algorithm base class, never `TTHttpJWTAbstractPayload` (it only declares the contract):
+
+| Base class | Unit | Overrides |
+|---|---|---|
+| `TTHttpJWTHS256Payload` | `Trysil.Http.JWT.Payload.HS256` | `GetSecret`, `ToJSon`, `FromJSon` |
+| `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` | `GetPublicKey`, `GetPrivateKey` (issuer only), `ToJSon`, `FromJSon` |
+
+HS256 for a single app that issues and validates; RS256 when the issuer and the resource servers are separate, so verifiers hold only the public key. RS256 keys are PEM strings and require OpenSSL `libcrypto` at runtime (loaded dynamically at first sign/verify, `ETHttpJWTException` if missing).
+
+Key rotation: override `GetSigningKeyID` to emit a `kid` header, and read `TokenKeyID` (the `kid` of the incoming token, set before `Verify`) to pick the matching key inside `GetSecret` / `GetPublicKey`.
+
+`ToJSon` / `FromJSon` define the claims: Trysil imposes no claim set, so validity (expiry) is the payload's own `IsValid`.
+
+Encode/verify with `TTHttpJWT<P>`:
 
 ```delphi
 LJWT := TTHttpJWT<TAPIJWTPayload>.Create(LPayload);

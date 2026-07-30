@@ -139,16 +139,16 @@ mistake. Decide the model up front and keep one unit of work on one model.
 
 - Entities from `Get` / `TryGet` / `Select` / `SelectAll` / `RawSelect` /
   `CreateEntity` are yours to free.
-- A `TTLazy<T>` N:1 reference **takes ownership of the entity you assign to it**.
-  `LOrder.Customer := LCustomer` means `LOrder` now owns `LCustomer` and frees it
-  when `LOrder` is freed (and also when you reassign the reference or change its
-  id). Consequences you must respect:
-  - Do **not** free an entity yourself after assigning it to a lazy reference -
-    the owner frees it (otherwise: double free).
-  - Do **not** assign **one** entity instance to more than one owner's lazy
-    reference - each owner will try to free it (double free / use-after-free).
-    Use a separate instance per owner, or set a plain integer FK column instead
-    (see the end of this section).
+- A `TTLazy<T>` N:1 reference **clones the entity you assign to it**.
+  `LOrder.Customer := LCustomer` stores a copy: `LOrder` owns that copy and frees
+  it when `LOrder` is freed (and also when you reassign the reference or change
+  its id), while `LCustomer` stays yours to free. Consequences:
+  - Free the entity you assigned, as usual - the lazy field never frees your
+    instance, only its own clone.
+  - Assigning **one** instance to several owners is safe: each owner gets its
+    own clone.
+  - Reading the reference back returns the clone, not your instance: changes made
+    to your object after the assignment do not reach the stored reference.
 - A `TTLazyList<T>` (1:N detail) owns the child entities it loads and frees them
   with the owner.
 
@@ -182,15 +182,14 @@ finally
 end;
 ```
 
-Rule of thumb for a script/console unit of work: if you wire related entities
-through lazy references, identity map **on** is usually less error-prone (nothing
-you hold needs manual freeing). If you stay **off**, never free an entity you have
-handed to a lazy reference, and never share one instance across owners.
+Rule of thumb for a script/console unit of work: with the identity map **on**
+nothing you hold needs manual freeing; with it **off** you free what you created
+or received, and each lazy reference independently owns its own clone.
 
-To set a foreign key **without** transferring ownership, model the FK as a plain
-`Integer` `[TColumn]` field (e.g. `OrderDetail.OrderID`) and assign the id
-directly - no lazy, no ownership. N:1 references modeled as `TTLazy<T>` always go
-through object assignment, and thus through the ownership rules above.
+To set a foreign key without any object at all, model the FK as a plain `Integer`
+`[TColumn]` field (e.g. `OrderDetail.OrderID`) and assign the id directly - no
+lazy, no clone. N:1 references modeled as `TTLazy<T>` always go through object
+assignment, and thus through the rules above.
 
 ## 3. Entity mapping
 
@@ -499,16 +498,20 @@ Do **not** use `try .. finally LTransaction.Free` here: on an exception the
 insert/update/delete lists in a single transaction, but only within one entity
 type.
 
+`ApplyAll<T>` opens a transaction **only when the write connection has none**, so
+calling it inside a transaction you opened yourself joins that one instead of
+nesting: several `ApplyAll<T>` calls on different entity types stay atomic
+together, and commit/rollback remain yours.
+
 Assigning a `TTLazy<T>` N:1 reference (e.g. `LLine.Product := LProduct`) writes
 that field's `[TColumn]` foreign-key value on the next insert/update: you set
 the related object, not its ID. `ApplyAll<T>` and `TTSession<T>` batch operations
 within a **single** entity type only; they do not cascade across types either.
 
-**Ownership when wiring references:** with the identity map off, the object you
-assign becomes owned by the entity you assign it to (`LOrder` owns the customer
-you set, each `LLine` owns its product). Do not also free those objects yourself,
-and do not assign one shared instance to several owners. See section 2a; if this
-gets awkward, either turn the identity map on or set plain integer FK columns.
+**Ownership when wiring references:** with the identity map off, the lazy field
+stores a **clone** of the object you assign, so you keep owning (and must free)
+the instance you passed, and one instance can be assigned to several owners.
+See section 2a.
 
 ## 7. TTSession<T> - Unit of Work (`Trysil.Session`)
 
@@ -859,7 +862,10 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 | `TTHttpAuthorizationType` | `Trysil.Http.Types` |
 | CORS config (`FServer.CorsConfig`) | `Trysil.Http.Cors` |
 | `TTHttpAuthenticationBasic`/`Bearer`/`Digest<C>` | `Trysil.Http.Authentication.{Basic,Bearer,Digest}` |
-| `TTHttpJWT<P>`, `TTHttpJWTAbstractPayload` | `Trysil.Http.JWT` |
+| `TTHttpJWT<P>` | `Trysil.Http.JWT` |
+| `TTHttpJWTAbstractPayload`, `ETHttpJWTException` | `Trysil.Http.JWT.Payload` |
+| `TTHttpJWTHS256Payload` | `Trysil.Http.JWT.Payload.HS256` |
+| `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` |
 | `TTHttpFilter<T>` | `Trysil.Http.Filter` |
 | `TTMultiTenant<T>`, `TTTenantConfig` | `Trysil.Http.MultiTenant` |
 | `TTHttpLogAbstractWriter` | `Trysil.Http.Log.Writer` |
@@ -984,7 +990,8 @@ end;
 
 **Request** - read input:
 - `FRequest.JSonContent: TJSonValue` - parsed body. `FRequest.JSonContent.GetValue<String>('username', '')`.
-- `FRequest.Parameters` - query params; `FRequest.Headers`; `FRequest.User` (username/password/areas); `FRequest.RemoteIP`.
+- `FRequest.Parameters` - query params; `FRequest.Headers`; `FRequest.User` (username/password/areas).
+- `FRequest.RemoteIP` - TCP peer address. `FRequest.ClientIP` - originating caller: same as `RemoteIP` for direct connections, but when the peer is loopback (local reverse proxy) it returns the last `X-Forwarded-For` entry, port and IPv6 brackets stripped. Use `ClientIP` for audit and rate limiting.
 
 **Response** - write output:
 - `FResponse.Content: String` - body (typically JSON).
@@ -1040,7 +1047,20 @@ Subclass the scheme you want, override the validation hooks, register one implem
 
 ### JWT (`Trysil.Http.JWT`)
 
-Define a payload by subclassing `TTHttpJWTAbstractPayload` (override `GetSecret`, `ToJSon`, `FromJSon`). Encode/verify with `TTHttpJWT<P>`:
+The payload is also the signer. Subclass the algorithm base class, never `TTHttpJWTAbstractPayload` (it only declares the contract):
+
+| Base class | Unit | Overrides |
+|---|---|---|
+| `TTHttpJWTHS256Payload` | `Trysil.Http.JWT.Payload.HS256` | `GetSecret`, `ToJSon`, `FromJSon` |
+| `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` | `GetPublicKey`, `GetPrivateKey` (issuer only), `ToJSon`, `FromJSon` |
+
+HS256 for a single app that issues and validates; RS256 when the issuer and the resource servers are separate, so verifiers hold only the public key. RS256 keys are PEM strings and require OpenSSL `libcrypto` at runtime (loaded dynamically at first sign/verify, `ETHttpJWTException` if missing).
+
+Key rotation: override `GetSigningKeyID` to emit a `kid` header, and read `TokenKeyID` (the `kid` of the incoming token, set before `Verify`) to pick the matching key inside `GetSecret` / `GetPublicKey`.
+
+`ToJSon` / `FromJSon` define the claims: Trysil imposes no claim set, so validity (expiry) is the payload's own `IsValid`.
+
+Encode/verify with `TTHttpJWT<P>`:
 
 ```delphi
 LJWT := TTHttpJWT<TAPIJWTPayload>.Create(LPayload);
