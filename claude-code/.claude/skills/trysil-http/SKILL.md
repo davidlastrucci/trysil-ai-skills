@@ -23,6 +23,7 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 | `TTHttpJWTAbstractPayload`, `ETHttpJWTException` | `Trysil.Http.JWT.Payload` |
 | `TTHttpJWTHS256Payload` | `Trysil.Http.JWT.Payload.HS256` |
 | `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` |
+| `TTHttpJWTRSAPrivateKey`, `TTHttpJWTRSAPublicKey` | `Trysil.Http.JWT.RSAKey` |
 | `TTHttpFilter<T>` | `Trysil.Http.Filter` |
 | `TTMultiTenant<T>`, `TTTenantConfig` | `Trysil.Http.MultiTenant` |
 | `TTHttpLogAbstractWriter` | `Trysil.Http.Log.Writer` |
@@ -209,11 +210,31 @@ The payload is also the signer. Subclass the algorithm base class, never `TTHttp
 | Base class | Unit | Overrides |
 |---|---|---|
 | `TTHttpJWTHS256Payload` | `Trysil.Http.JWT.Payload.HS256` | `GetSecret`, `ToJSon`, `FromJSon` |
-| `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` | `GetPublicKey`, `GetPrivateKey` (issuer only), `ToJSon`, `FromJSon` |
+| `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` | `GetVerificationKey`, `GetSigningKey` (issuer only), `ToJSon`, `FromJSon` |
 
-HS256 for a single app that issues and validates; RS256 when the issuer and the resource servers are separate, so verifiers hold only the public key. RS256 keys are PEM strings and require OpenSSL `libcrypto` at runtime (loaded dynamically at first sign/verify, `ETHttpJWTException` if missing).
+HS256 for a single app that issues and validates; RS256 when the issuer and the resource servers are separate, so verifiers hold only the public key.
 
-Key rotation: override `GetSigningKeyID` to emit a `kid` header, and read `TokenKeyID` (the `kid` of the incoming token, set before `Verify`) to pick the matching key inside `GetSecret` / `GetPublicKey`.
+RS256 keys are **objects, not PEM strings**: `TTHttpJWTRSAPrivateKey` (`Sign` + `Verify`) and `TTHttpJWTRSAPublicKey` (`Verify` only), from `Trysil.Http.JWT.RSAKey`. They parse the PEM in the constructor and hold it for their lifetime. Create them **once at startup** and return them from the payload's getters, which borrow them:
+
+```delphi
+// startup, owned by the application
+FSigningKey := TTHttpJWTRSAPrivateKey.Create(LPrivatePem, '2026-07');
+
+function TAPIJWTPayload.GetSigningKey: TTHttpJWTRSAPrivateKey;
+begin
+  result := TAPIConfig.Instance.SigningKey;
+end;
+
+function TAPIJWTPayload.GetVerificationKey(
+  const AKeyID: String): TTHttpJWTRSAAbstractKey;
+begin
+  result := TAPIConfig.Instance.KeyFor(AKeyID);   // AKeyID = the token's kid
+end;
+```
+
+Never construct a key inside the payload: a payload is per-request, so that parses RSA on every request. One key instance is safe to share across threads. Requires OpenSSL `libcrypto` at runtime (loaded dynamically when the first key is built, `ETHttpJWTException` if missing).
+
+Key rotation: outgoing, override `GetSigningKeyID` (HS256) or pass the key ID to the key constructor (RS256, `Create(APem, AKeyID)`) and the payload emits it as `kid`. Incoming, the `kid` is an **argument, never payload state**: `Verify` receives it and forwards it to `GetSecretFor(AKeyID)` (HS256, defaults to `GetSecret`) or `GetVerificationKey(AKeyID)` (RS256, `nil` fails closed).
 
 `ToJSon` / `FromJSon` define the claims: Trysil imposes no claim set, so validity (expiry) is the payload's own `IsValid`.
 
