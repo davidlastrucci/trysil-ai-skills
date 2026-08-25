@@ -259,12 +259,14 @@ Trysil maps to **existing** tables - it does not create, migrate, or alter the s
 | `String` | `ftWideString` / `ftString` | `NVARCHAR(n)` / `VARCHAR(n)` |
 | `String` (long text) | `ftWideMemo` / `ftMemo` | `NTEXT` / `TEXT` |
 | `Double` | `ftFloat` (`ftBCD`/`ftFMTBcd`/`ftCurrency`/`ftSingle`) | `FLOAT` / `NUMERIC(p,s)` |
+| `Currency` | `ftBCD` / `ftFMTBcd` (`ftCurrency`/`ftFloat`) | `DECIMAL(19,4)` / `NUMERIC(19,4)` |
 | `Boolean` | `ftBoolean` | `BOOLEAN` / `BIT` |
 | `TDateTime` | `ftDateTime` (`ftDate`/`ftTimeStamp`) | `DATETIME` / `TIMESTAMP` |
 | `TGuid` | `ftGuid` | `UNIQUEIDENTIFIER` / `CHAR(36)` / `UUID` |
 | `TBytes` | `ftBlob` | `BLOB` / `VARBINARY` / `BYTEA` |
 
-- Use `Double` for money - there is no dedicated currency field type (`ftCurrency` maps to `Double`).
+- Use `Currency` for money, not `Double`. `Currency` is a fixed-point type exact to four decimal places, and Trysil maps it end to end without ever converting through `Double`: values are read with `TField.AsCurrency` and written with the parameter's `AsCurrency`, so the four decimals survive the round trip. `TTNullable<Currency>` works the same way. Pair it with a `DECIMAL(19,4)` column - Firebird and InterBase cap precision at 18 digits, so declare `DECIMAL(18,4)` there, and Oracle spells it `NUMBER(19,4)`. SQLite has no decimal type at all: the column keeps NUMERIC affinity but the value is stored as a float, so exactness there is limited to what a double can hold.
+- Use `Double` for genuine floating-point quantities (measures, ratios, coordinates), not for amounts of money.
 - Enumerations are stored as their integer ordinal (`INT`) and converted via RTTI; no dedicated column type.
 - `TTNullable<T>` maps to the same type as `T` - just make the DB column nullable.
 - Primary key and `[TVersionColumn]` columns are `INT NOT NULL`. Soft-delete columns (section 8) are a nullable `DATETIME` (`*At`) plus a `NVARCHAR` (`*By`).
@@ -337,7 +339,7 @@ end;
 
 Conditions: `Equal`, `NotEqual`, `Greater`, `GreaterOrEqual`, `Less`, `LessOrEqual`, `Like`, `NotLike`, `IsNull`, `IsNotNull`. Combine with `Where`/`AndWhere`/`OrWhere`. Paging/order: `OrderByAsc`/`OrderByDesc`, `Limit`, `Offset`. Use `TTFilter.Empty` for "no filter" and `SelectCount<T>(AFilter)` for counts.
 
-The value-taking conditions (`Equal`, `Greater`, `Like`, …) each take a single `const AValue: TTValue` parameter - there are **no** per-type overloads. `TTValue` accepts any scalar (`String`, `Integer`, `Double`, `Boolean`, `TDateTime`, …) by implicit conversion, so pass the value directly whatever its type: `.Where('Description').Equal('Widget')`, `.AndWhere('Price').Greater(5.0)`, `.AndWhere('BrandID').Equal(LBrand.ID)`.
+The value-taking conditions (`Equal`, `Greater`, `Like`, …) each take a single `const AValue: TTValue` parameter - there are **no** per-type overloads. `TTValue` accepts any scalar (`String`, `Integer`, `Double`, `Currency`, `Boolean`, `TDateTime`, …) by implicit conversion, so pass the value directly whatever its type: `.Where('Description').Equal('Widget')`, `.AndWhere('Price').Greater(5.0)`, `.AndWhere('BrandID').Equal(LBrand.ID)`.
 
 ## 5a. Expression API - grouped conditions (`Trysil.Filter.Expression`)
 
@@ -595,7 +597,7 @@ All Trysil exceptions derive from `ETException` (`Trysil.Exceptions`):
 
 `[TRequired]`, `[TMaxLength(n)]`, `[TMinLength(n)]`, `[TMinValue(n)]`, `[TMaxValue(n)]`, `[TLess(n)]`, `[TGreater(n)]`, `[TRange(min, max)]`, `[TRegex('pattern')]`, `[TEMail]`.
 
-**Value type must match the field type** (`TMinValue` / `TMaxValue` / `TLess` / `TGreater` / `TRange`): the literal you pass picks the comparison type, and it has to match the field's type, or validation fails at runtime with `<Column> type not valid for validation`. For a `Double` field write a float literal - `[TGreater(0.0)]`, not `[TGreater(0)]` - and for an `Integer` field write an integer literal - `[TGreater(0)]`. So `Price: Double` needs `[TGreater(0.0)]` / `[TMinValue(0.01)]`, while `Quantity: Integer` needs `[TGreater(0)]`.
+**Value type must match the field type** (`TMinValue` / `TMaxValue` / `TLess` / `TGreater` / `TRange`): the literal you pass picks the comparison type, and it has to match the field's type, or validation fails at runtime with `<Column> type not valid for validation`. For a `Double` or `Currency` field write a float literal - `[TGreater(0.0)]`, not `[TGreater(0)]` - and for an `Integer` field write an integer literal - `[TGreater(0)]`. So `Price: Currency` needs `[TGreater(0.0)]` / `[TMinValue(0.01)]`, while `Quantity: Integer` needs `[TGreater(0)]`. The attribute takes a `Double` argument in both cases; there is no `Currency` overload, and none is needed.
 
 **`[TEMail]`** validates a basic email format with a built-in regex. An empty
 string passes (the check is skipped when the value is empty, so add `[TRequired]`
