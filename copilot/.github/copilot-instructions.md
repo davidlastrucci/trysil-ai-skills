@@ -16,7 +16,7 @@ Trysil is a Delphi ORM. Entities are plain classes decorated with attributes; `T
 | `TTConnection` + `Connection.Execute` | `Trysil.Data` |
 | `TTSQLiteConnection`, `TTSqlServerConnection`, … (drivers) | `Trysil.Data.FireDAC.<DB>` |
 | `TTFireDACConnectionPool` | `Trysil.Data.FireDAC.ConnectionPool` |
-| `TTTransaction` (from `Context.CreateTransaction`) | `Trysil.Transaction` |
+| `TTTransaction`, `TTTransactionMode` | `Trysil.Transaction` |
 | `TTFilter`, `TTFilterBuilder<T>` | `Trysil.Filter` |
 | `TTProperty`, `TTExpression` (expression API) | `Trysil.Filter.Expression` |
 | `TTSession<T>` | `Trysil.Session` |
@@ -475,30 +475,51 @@ FContext.Insert<TOrderDetail>(LLine);  // then each child, one by one
 **Atomicity: wrap master + children in one transaction.** Each
 `Insert`/`Update`/`Delete` runs in its own transaction, so a failure partway
 through saving an order and its lines leaves a partial result (order saved, some
-lines missing). To make the whole graph all-or-nothing, open a transaction with
-`Context.CreateTransaction`, which returns a `TTTransaction` (declared in unit
-`Trysil.Transaction` - add it to your `uses`). It starts on creation and commits
-when freed; roll back explicitly on error, so that freeing does not commit a
-half-written graph:
+lines missing). To make the whole graph all-or-nothing, use
+`Context.RunInTransaction`:
 
 ```delphi
-LTransaction := FContext.CreateTransaction;  // LTransaction: TTTransaction (unit Trysil.Transaction)
+FContext.RunInTransaction(
+  procedure
+  var
+    LLine: TOrderDetail;
+  begin
+    FContext.Insert<TOrder>(LOrder);
+    for LLine in LLines do
+      FContext.Insert<TOrderDetail>(LLine);
+  end);
+```
+
+It commits when the procedure returns normally, rolls back and re-raises on an
+exception, and **joins the current transaction** when one is already active - so
+a method written this way is atomic whether it is called on its own or from
+inside a larger unit of work.
+
+When you need to decide commit and rollback yourself, `Context.CreateTransaction`
+takes a `TTTransactionMode` (unit `Trysil.Transaction` - add it to your `uses`):
+
+```delphi
+LTransaction := FContext.CreateTransaction(
+  TTTransactionMode.RollbackOnDestroy);
 try
   FContext.Insert<TOrder>(LOrder);
   for LLine in LLines do
     FContext.Insert<TOrderDetail>(LLine);
-  LTransaction.Free;          // success: commit
-except
-  LTransaction.Rollback;      // failure: undo everything
+
+  LTransaction.Commit;
+finally
   LTransaction.Free;
-  raise;
 end;
 ```
 
-Do **not** use `try .. finally LTransaction.Free` here: on an exception the
-`finally` would still commit the partial work. `ApplyAll<T>` already runs its
-insert/update/delete lists in a single transaction, but only within one entity
-type.
+Use `RollbackOnDestroy`: any path that leaves the block without reaching
+`Commit` rolls back, which is what makes the plain `try .. finally` correct.
+`CommitOnDestroy` is the old behaviour, where destruction is what commits, so
+the same `try .. finally` would commit half-written work on an exception.
+`CreateTransaction` with no argument is deprecated and means `CommitOnDestroy`.
+
+`ApplyAll<T>` already runs its insert/update/delete lists in a single
+transaction, but only within one entity type.
 
 `ApplyAll<T>` opens a transaction **only when the write connection has none**, so
 calling it inside a transaction you opened yourself joins that one instead of
