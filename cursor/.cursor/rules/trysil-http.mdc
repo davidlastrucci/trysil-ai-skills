@@ -298,9 +298,24 @@ Expected JSON shape:
 }
 ```
 
-Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`. `includeDeleted` bypasses the automatic soft-delete filter.
+Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`.
 
-Values are **bound as typed parameters**, never inlined: each condition emits `:p0`, `:p1` and the value is converted from the column's `TFieldType`. Anything that does not add up raises `ETHttpBadRequest` (400) at parse time - unknown column, operator outside the closed list, value incompatible with the column type, a non-object item inside `where`, or `LIKE` on a non-string column.
+Values are **bound as typed parameters**, never inlined: each condition emits `:p0`, `:p1` and the value is converted from the column's `TFieldType` (a `[TGuid]` or `[TCurrency]` column is converted and bound as such, not as its raw field type). The column name that reaches the SQL text is the **canonical one from the metadata**, not the string the client sent. Anything that does not add up raises `ETHttpBadRequest` (400) at parse time - unknown column, operator outside the closed list, value incompatible with the column type, a non-object item inside `where` **or inside `orderBy`**, or `LIKE` on a non-string column.
+
+**The payload cannot widen the query.** `TTHttpFilterParameters` carries the ceilings, and the two-argument `TTHttpFilter<T>.Create` applies `TTHttpFilterParameters.Defaults`: `MaxLimit` 1000, `MaxWhereConditions` 32, `MaxOrderByColumns` 8, `IncludeDeleted` False.
+
+- `limit` is **clamped**, not trusted: absent, zero or negative means `MaxLimit`, and a larger value is capped to it. There is no "return the whole table" request a client can make. A negative `start` is normalized to `0`.
+- More `where` conditions or `orderBy` columns than the maximum is a 400, not a slow query.
+- **`includeDeleted` is not read from the payload.** Showing soft-deleted rows is a server-side decision: pass parameters that say so, after your own authorization check.
+
+```delphi
+LHttpFilter := TTHttpFilter<T>.Create(
+  Context,
+  FRequest.JSonContent,
+  TTHttpFilterParameters.Create(200, 16, 4, UserMaySeeDeleted));
+```
+
+A negative ceiling means unlimited, for an internal export endpoint that genuinely needs it.
 
 ## 8. Multi-tenant (`Trysil.Http.MultiTenant`)
 
@@ -311,7 +326,9 @@ Two ways in, and the choice matters:
 - `TryGet(AName, ATenant): Boolean` - looks the tenant up under a read lock and **never constructs**. Use it for every read-only consumer: resolving the inbound host, log writers, support services.
 - `GetOrAdd(AName)` - **creates** the tenant if missing, which reads and parses its configuration file. Use it only where creation is intended: after authentication on the request path, or at startup when building the registry of known tenants.
 
-Failures are not memoized (deliberately - a repaired tenant must not stay broken until restart), so a syntactically valid but non-existent name repeats the whole file read on **every** `GetOrAdd`. An anonymous caller rotating the `Host` header would generate disk I/O and lock contention without authenticating.
+Failures are not memoized (deliberately - a repaired tenant must not stay broken until restart), but they are **rate limited**: a failed `GetOrAdd` records the name with a cooldown (`FailureCooldown`, 5000 ms by default, settable, `0` disables it) and repeats within that window re-raise the recorded message without touching the disk. The cost of an anonymous caller rotating the `Host` header stops being a function of traffic, and an operator's repair takes effect within the cooldown rather than at restart. The failure table is capped at 128 names and expired entries are swept on every insert, so the client cannot grow it.
+
+`Remove(AName)` detaches the tenant from the registry - `TryGet` and `GetAll` stop seeing it - but **does not destroy it**. Tenants handed out by `TryGet`/`GetOrAdd` are borrowed references, and a thread that resolved one an instant earlier may be about to use its connection; the instance is released with the registry. Reclaiming memory per tenant would need a use count, which is a design decision, not a call you can make from `Remove`.
 
 In `GetParameters`, zero the record first: `Result := Default(TTFireDACConnectionParameters);`. A local record only initialises its managed fields.
 
@@ -335,7 +352,8 @@ FServer.OnCanLog :=
 - **`OnCanLog`** is asked on the request thread **before** the log record is built. Returning `False` costs nothing: no body serialization, no copy, no queue, no INSERT. Assign it before `Start`; it runs on every request thread, so keep it thread-safe and resolve tenants with `TryGet`.
 - **`LogRequest` runs before routing and authentication.** `WriteRequest` is invoked for 404s and 401s too, so in a per-database multi-tenant app an anonymous caller can push rows into the log database of whatever tenant it names in `Host`. `OnCanLog` is where you reject or divert them.
 - **Bodies above `MaxContentLength` are not captured at all**, and the size is measured without touching the body. The omission is declared: `ToJSon` always writes `ContentLength`, and `ContentOmitted: true` replaces `Content`.
-- **The queue has a cap.** When full the newest entry is rejected and counted per host; the log thread then reports it through `WriteDiscarded(ADiscarded: TTHttpLogDiscarded)`, which carries `Host` and `Count`. It is virtual but not abstract - existing writers still compile, and the default forwards to `WriteAction`.
+- **The queue has a cap.** When full the newest entry is rejected and counted per host; the log thread then reports it through `WriteDiscarded(ADiscarded: TTHttpLogDiscarded)`, which carries `Host` and `Count`. It is virtual but not abstract - existing writers still compile, and the default forwards to `WriteAction`. The host is sanitized and truncated before it becomes a key or reaches the report, distinct hosts are capped at 64 with the rest accumulating under `<other>`, and the counts are flushed on a timer as well as when the queue empties - under sustained load the queue never empties.
+- **Unhandled errors have their own hook.** `WriteError(ALogError: TTHttpLogError)` receives the task id, host, uri, exception class and message, and the recorded nested class and message. Like `WriteDiscarded` it is virtual, not abstract, and its default forwards to `WriteAction`. The exception is rendered to strings **synchronously on the request thread** and only the strings are queued - the exception object does not survive the handler. It is not gated by `OnCanLog`: an error row is always worth writing.
 
 ## 10. Errors & HTTP status codes
 
@@ -350,10 +368,11 @@ The listener catches every exception centrally and turns it into the JSON respon
   | `ETHttpForbidden` | 403 |
   | `ETHttpNotFound` | 404 |
   | `ETHttpMethodNotAllowed` | 405 |
+  | `ETHttpConflict` | 409 |
   | `ETHttpInternalServerError` | 500 |
   | `ETHttpException.Create(code, msg)` | any code you pass |
 
-- **Every other exception becomes HTTP 500** - including the ORM's `ETValidationException`, `ETConcurrentUpdateException`, and `ETDataIntegrityException`. There is **no automatic ORM-to-HTTP mapping**. To return 400 on a failed validation or 409 on a version conflict, catch the ORM exception in the controller and re-raise as an `ETHttp*` (or `ETHttpException` with an explicit code - there is no 409 constant):
+- **Every other exception becomes HTTP 500**, and the 500 body is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two. That includes the ORM's `ETValidationException`, `ETConcurrentUpdateException`, and `ETDataIntegrityException`. There is **no automatic ORM-to-HTTP mapping**. To return 400 on a failed validation or 409 on a version conflict, catch the ORM exception in the controller and re-raise as an `ETHttp*`:
 
 ```delphi
 procedure TAPIReadWriteController<T>.Update;
@@ -369,7 +388,7 @@ begin
       on E: ETValidationException do
         raise ETHttpBadRequest.Create(E.Message);            // 400
       on E: ETConcurrentUpdateException do
-        raise ETHttpException.Create(409, E.Message);          // 409 Conflict
+        raise ETHttpConflict.Create(E.Message);                // 409 Conflict
     end;
   finally
     LEntity.Free;

@@ -46,7 +46,7 @@ constructor Create(const AMaxLevels: Integer; const ADetails: Boolean);
 ```delphi
 LConfig := TTJSonSerializerConfig.Create(-1, False);  // defaults: unlimited depth, no details
 LConfigGet    := TTJSonSerializerConfig.Create(1, True);   // one level deep, with details
-LConfigSelect := TTJSonSerializerConfig.Create(1, False);
+LConfigSelect := TTJSonSerializerConfig.Create(0, False);  // list endpoint: relations as ids, no per-row round trips
 LConfigFind   := TTJSonSerializerConfig.Create(0, False);
 ```
 
