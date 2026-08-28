@@ -104,6 +104,18 @@ TTPostgreSQLConnection.RegisterConnection('Pg', 'host', 5432, 'user', 'pwd', 'db
 FConnection := TTPostgreSQLConnection.Create('Pg');
 ```
 
+`Config` is the **default** for every connection definition. To give one connection its own pool limits - typical when an application hosts a busy app database and a quiet log database - put the parameters in the `TTFireDACConnectionParameters` record and register through the factory:
+
+```delphi
+LParameters := Default(TTFireDACConnectionParameters);   // records: zero it first
+LParameters.Driver := 'SQLite';
+LParameters.DatabaseName := 'log.db';
+LParameters.PoolParameters := TTFireDACPoolParameters.Create(True, 2);
+TTFireDACConnectionFactory.Instance.RegisterConnection('Log', LParameters);
+```
+
+`TTFireDACPoolParameters` is immutable; `IsAssigned` separates "not declared, use the global `Config`" from "declared", so `Create(False, 1)` disables pooling for that one connection instead of inheriting the global setting.
+
 All drivers extend the abstract `TTConnection`, so a `TTConnection` variable can hold any of them and is what `TTContext` expects - useful if the target database may change.
 
 **FireDAC wait-cursor unit (easy to miss).** FireDAC needs a wait-cursor provider linked into the project, matched to the application type, or it errors the first time it touches the UI layer. Add the right one to the project's uses (typically the `.dpr` or main unit):
@@ -406,6 +418,8 @@ Other types in the unit: `TTObjectList<T>` (owns items - frees on remove when `O
 ## 6. Lazy loading (`Trysil.Lazy`)
 
 `TTLazy<T>` (N:1) and `TTLazyList<T>` (1:N). **Never** create or free these manually and never add a separate `FxxxID` field - the framework instantiates and releases them via RTTI and triggers reload when `.ID` is set. Expose plain-typed properties through getters.
+
+`TTLazy<T>.IsLoaded` reports whether the reference is already in memory **without triggering the load** - reading `.Entity` to find out would load it. Use it to avoid N+1 in a grid, or in tests as the assertion for "no query was issued". `TTLazyList<T>` does not have it.
 
 ```delphi
 [TTable('Orders')]

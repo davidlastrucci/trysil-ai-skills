@@ -298,15 +298,44 @@ Expected JSON shape:
 }
 ```
 
-Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`.
+Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`. `includeDeleted` bypasses the automatic soft-delete filter.
+
+Values are **bound as typed parameters**, never inlined: each condition emits `:p0`, `:p1` and the value is converted from the column's `TFieldType`. Anything that does not add up raises `ETHttpBadRequest` (400) at parse time - unknown column, operator outside the closed list, value incompatible with the column type, a non-object item inside `where`, or `LIKE` on a non-string column.
 
 ## 8. Multi-tenant (`Trysil.Http.MultiTenant`)
 
-`TTMultiTenant<T: TTTenantConfig>` is a thread-safe singleton mapping a tenant name to a `TTTenant<T>` (its own config + connection). Subclass `TTTenantConfig` (override `GetConnectionName`, `GetParameters`); in your per-request context resolve the tenant (e.g. from a header) via `TTMultiTenant<T>.Instance.GetOrAdd(name)` and build the `TTHttpContext` on `tenant.Connection.CreateConnection`.
+`TTMultiTenant<T: TTTenantConfig>` is a thread-safe singleton mapping a tenant name to a `TTTenant<T>` (its own config + connection). Subclass `TTTenantConfig` (override `GetConnectionName`, `GetParameters`) and build the `TTHttpContext` on `tenant.Connection.CreateConnection`.
+
+Two ways in, and the choice matters:
+
+- `TryGet(AName, ATenant): Boolean` - looks the tenant up under a read lock and **never constructs**. Use it for every read-only consumer: resolving the inbound host, log writers, support services.
+- `GetOrAdd(AName)` - **creates** the tenant if missing, which reads and parses its configuration file. Use it only where creation is intended: after authentication on the request path, or at startup when building the registry of known tenants.
+
+Failures are not memoized (deliberately - a repaired tenant must not stay broken until restart), so a syntactically valid but non-existent name repeats the whole file read on **every** `GetOrAdd`. An anonymous caller rotating the `Host` header would generate disk I/O and lock contention without authenticating.
+
+In `GetParameters`, zero the record first: `Result := Default(TTFireDACConnectionParameters);`. A local record only initialises its managed fields.
 
 ## 9. Logging
 
-Subclass `TTHttpLogAbstractWriter` (override `WriteAction`/`WriteRequest`/`WriteResponse`) and register with `RegisterLogWriter<W>()`. The writer can persist log rows through its own Trysil context.
+Subclass `TTHttpLogAbstractWriter` (override `WriteAction`/`WriteRequest`/`WriteResponse`, optionally `WriteDiscarded`) and register with `RegisterLogWriter<W>()`. The writer can persist log rows through its own Trysil context.
+
+Three registration overloads: no argument (one log thread), a thread pool size, or a `TTHttpLogParameters` record carrying `ThreadPoolSize`, `QueueCapacity` and `MaxContentLength` (negative = unlimited).
+
+```delphi
+FServer.RegisterLogWriter<TAPILogWriter>(
+  TTHttpLogParameters.Create(4, 10000, 65536));
+
+FServer.OnCanLog :=
+  function(ARequest: TTHttpRequest): Boolean
+  begin
+    Result := TenantLogEnabled(ARequest.Host);
+  end;
+```
+
+- **`OnCanLog`** is asked on the request thread **before** the log record is built. Returning `False` costs nothing: no body serialization, no copy, no queue, no INSERT. Assign it before `Start`; it runs on every request thread, so keep it thread-safe and resolve tenants with `TryGet`.
+- **`LogRequest` runs before routing and authentication.** `WriteRequest` is invoked for 404s and 401s too, so in a per-database multi-tenant app an anonymous caller can push rows into the log database of whatever tenant it names in `Host`. `OnCanLog` is where you reject or divert them.
+- **Bodies above `MaxContentLength` are not captured at all**, and the size is measured without touching the body. The omission is declared: `ToJSon` always writes `ContentLength`, and `ContentOmitted: true` replaces `Content`.
+- **The queue has a cap.** When full the newest entry is rejected and counted per host; the log thread then reports it through `WriteDiscarded(ADiscarded: TTHttpLogDiscarded)`, which carries `Host` and `Count`. It is virtual but not abstract - existing writers still compile, and the default forwards to `WriteAction`.
 
 ## 10. Errors & HTTP status codes
 

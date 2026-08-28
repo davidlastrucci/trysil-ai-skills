@@ -41,6 +41,8 @@ constructor Create(const AMaxLevels: Integer; const ADetails: Boolean);
 - `AMaxLevels` - max nesting depth for related entities; `-1` = unlimited, `0` = none (relations emitted as IDs only).
 - `ADetails` - include detail (1:N) collections.
 
+`AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on. Use `0` on list endpoints to avoid `rows x N:1 relations` round trips.
+
 ```delphi
 LConfig := TTJSonSerializerConfig.Create(-1, False);  // defaults: unlimited depth, no details
 LConfigGet    := TTJSonSerializerConfig.Create(1, True);   // one level deep, with details

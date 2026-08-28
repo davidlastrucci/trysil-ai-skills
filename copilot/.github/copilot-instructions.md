@@ -104,6 +104,18 @@ TTPostgreSQLConnection.RegisterConnection('Pg', 'host', 5432, 'user', 'pwd', 'db
 FConnection := TTPostgreSQLConnection.Create('Pg');
 ```
 
+`Config` is the **default** for every connection definition. To give one connection its own pool limits - typical when an application hosts a busy app database and a quiet log database - put the parameters in the `TTFireDACConnectionParameters` record and register through the factory:
+
+```delphi
+LParameters := Default(TTFireDACConnectionParameters);   // records: zero it first
+LParameters.Driver := 'SQLite';
+LParameters.DatabaseName := 'log.db';
+LParameters.PoolParameters := TTFireDACPoolParameters.Create(True, 2);
+TTFireDACConnectionFactory.Instance.RegisterConnection('Log', LParameters);
+```
+
+`TTFireDACPoolParameters` is immutable; `IsAssigned` separates "not declared, use the global `Config`" from "declared", so `Create(False, 1)` disables pooling for that one connection instead of inheriting the global setting.
+
 All drivers extend the abstract `TTConnection`, so a `TTConnection` variable can hold any of them and is what `TTContext` expects - useful if the target database may change.
 
 **FireDAC wait-cursor unit (easy to miss).** FireDAC needs a wait-cursor provider linked into the project, matched to the application type, or it errors the first time it touches the UI layer. Add the right one to the project's uses (typically the `.dpr` or main unit):
@@ -406,6 +418,8 @@ Other types in the unit: `TTObjectList<T>` (owns items - frees on remove when `O
 ## 6. Lazy loading (`Trysil.Lazy`)
 
 `TTLazy<T>` (N:1) and `TTLazyList<T>` (1:N). **Never** create or free these manually and never add a separate `FxxxID` field - the framework instantiates and releases them via RTTI and triggers reload when `.ID` is set. Expose plain-typed properties through getters.
+
+`TTLazy<T>.IsLoaded` reports whether the reference is already in memory **without triggering the load** - reading `.Entity` to find out would load it. Use it to avoid N+1 in a grid, or in tests as the assertion for "no query was issued". `TTLazyList<T>` does not have it.
 
 ```delphi
 [TTable('Orders')]
@@ -758,6 +772,8 @@ constructor Create(const AMaxLevels: Integer; const ADetails: Boolean);
 
 - `AMaxLevels` - max nesting depth for related entities; `-1` = unlimited, `0` = none (relations emitted as IDs only).
 - `ADetails` - include detail (1:N) collections.
+
+`AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on. Use `0` on list endpoints to avoid `rows x N:1 relations` round trips.
 
 ```delphi
 LConfig := TTJSonSerializerConfig.Create(-1, False);  // defaults: unlimited depth, no details
@@ -1164,15 +1180,44 @@ Expected JSON shape:
 }
 ```
 
-Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`.
+Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`. `includeDeleted` bypasses the automatic soft-delete filter.
+
+Values are **bound as typed parameters**, never inlined: each condition emits `:p0`, `:p1` and the value is converted from the column's `TFieldType`. Anything that does not add up raises `ETHttpBadRequest` (400) at parse time - unknown column, operator outside the closed list, value incompatible with the column type, a non-object item inside `where`, or `LIKE` on a non-string column.
 
 ## 8. Multi-tenant (`Trysil.Http.MultiTenant`)
 
-`TTMultiTenant<T: TTTenantConfig>` is a thread-safe singleton mapping a tenant name to a `TTTenant<T>` (its own config + connection). Subclass `TTTenantConfig` (override `GetConnectionName`, `GetParameters`); in your per-request context resolve the tenant (e.g. from a header) via `TTMultiTenant<T>.Instance.GetOrAdd(name)` and build the `TTHttpContext` on `tenant.Connection.CreateConnection`.
+`TTMultiTenant<T: TTTenantConfig>` is a thread-safe singleton mapping a tenant name to a `TTTenant<T>` (its own config + connection). Subclass `TTTenantConfig` (override `GetConnectionName`, `GetParameters`) and build the `TTHttpContext` on `tenant.Connection.CreateConnection`.
+
+Two ways in, and the choice matters:
+
+- `TryGet(AName, ATenant): Boolean` - looks the tenant up under a read lock and **never constructs**. Use it for every read-only consumer: resolving the inbound host, log writers, support services.
+- `GetOrAdd(AName)` - **creates** the tenant if missing, which reads and parses its configuration file. Use it only where creation is intended: after authentication on the request path, or at startup when building the registry of known tenants.
+
+Failures are not memoized (deliberately - a repaired tenant must not stay broken until restart), so a syntactically valid but non-existent name repeats the whole file read on **every** `GetOrAdd`. An anonymous caller rotating the `Host` header would generate disk I/O and lock contention without authenticating.
+
+In `GetParameters`, zero the record first: `Result := Default(TTFireDACConnectionParameters);`. A local record only initialises its managed fields.
 
 ## 9. Logging
 
-Subclass `TTHttpLogAbstractWriter` (override `WriteAction`/`WriteRequest`/`WriteResponse`) and register with `RegisterLogWriter<W>()`. The writer can persist log rows through its own Trysil context.
+Subclass `TTHttpLogAbstractWriter` (override `WriteAction`/`WriteRequest`/`WriteResponse`, optionally `WriteDiscarded`) and register with `RegisterLogWriter<W>()`. The writer can persist log rows through its own Trysil context.
+
+Three registration overloads: no argument (one log thread), a thread pool size, or a `TTHttpLogParameters` record carrying `ThreadPoolSize`, `QueueCapacity` and `MaxContentLength` (negative = unlimited).
+
+```delphi
+FServer.RegisterLogWriter<TAPILogWriter>(
+  TTHttpLogParameters.Create(4, 10000, 65536));
+
+FServer.OnCanLog :=
+  function(ARequest: TTHttpRequest): Boolean
+  begin
+    Result := TenantLogEnabled(ARequest.Host);
+  end;
+```
+
+- **`OnCanLog`** is asked on the request thread **before** the log record is built. Returning `False` costs nothing: no body serialization, no copy, no queue, no INSERT. Assign it before `Start`; it runs on every request thread, so keep it thread-safe and resolve tenants with `TryGet`.
+- **`LogRequest` runs before routing and authentication.** `WriteRequest` is invoked for 404s and 401s too, so in a per-database multi-tenant app an anonymous caller can push rows into the log database of whatever tenant it names in `Host`. `OnCanLog` is where you reject or divert them.
+- **Bodies above `MaxContentLength` are not captured at all**, and the size is measured without touching the body. The omission is declared: `ToJSon` always writes `ContentLength`, and `ContentOmitted: true` replaces `Content`.
+- **The queue has a cap.** When full the newest entry is rejected and counted per host; the log thread then reports it through `WriteDiscarded(ADiscarded: TTHttpLogDiscarded)`, which carries `Host` and `Count`. It is virtual but not abstract - existing writers still compile, and the default forwards to `WriteAction`.
 
 ## 10. Errors & HTTP status codes
 
