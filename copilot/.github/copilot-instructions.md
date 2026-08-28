@@ -962,7 +962,7 @@ Attributes from `Trysil.Http.Attributes`:
 | `[TPut]` / `[TPut('/sub')]` | method | maps PUT |
 | `[TDelete]` / `[TDelete('/?/?')]` | method | maps DELETE |
 | `[TArea('name')]` | method | required user area/permission |
-| `[TAuthorizationType(TTHttpAuthorizationType.None)]` | class/method | bypass auth (e.g. login) |
+| `[TAuthorizationType(TTHttpAuthorizationType.None)]` | class/method | bypass auth (e.g. login) - read on both, the method wins |
 
 `?` segments are positional path parameters bound to the method's parameters in order. `/?` → one param, `/?/?` → two.
 
@@ -1182,6 +1182,14 @@ Expected JSON shape:
 
 Allowed conditions: `=`, `<>`, `<`, `<=`, `>`, `>=`, `LIKE`, `NOT LIKE`. Directions: `ASC`, `DESC`.
 
+**`[TNotFilterable]`** (`Trysil.Attributes`) marks an entity column as not reachable from the filter: `where` and `orderBy` on it answer 400. Every mapped column is filterable unless annotated, so put it on the columns a caller should not be able to probe - a password hash, an internal cost - remembering that `LIKE` plus the row count is enough to read a value one character at a time without ever seeing it serialized.
+
+```delphi
+[TColumn('Password')]
+[TNotFilterable]
+FPassword: String;
+```
+
 Values are **bound as typed parameters**, never inlined: each condition emits `:p0`, `:p1` and the value is converted from the column's `TFieldType` (a `[TGuid]` or `[TCurrency]` column is converted and bound as such, not as its raw field type). The column name that reaches the SQL text is the **canonical one from the metadata**, not the string the client sent. Anything that does not add up raises `ETHttpBadRequest` (400) at parse time - unknown column, operator outside the closed list, value incompatible with the column type, a non-object item inside `where` **or inside `orderBy`**, or `LIKE` on a non-string column.
 
 **The payload cannot widen the query.** `TTHttpFilterParameters` carries the ceilings, and the two-argument `TTHttpFilter<T>.Create` applies `TTHttpFilterParameters.Defaults`: `MaxLimit` 1000, `MaxWhereConditions` 32, `MaxOrderByColumns` 8, `IncludeDeleted` False.
@@ -1208,7 +1216,7 @@ Two ways in, and the choice matters:
 - `TryGet(AName, ATenant): Boolean` - looks the tenant up under a read lock and **never constructs**. Use it for every read-only consumer: resolving the inbound host, log writers, support services.
 - `GetOrAdd(AName)` - **creates** the tenant if missing, which reads and parses its configuration file. Use it only where creation is intended: after authentication on the request path, or at startup when building the registry of known tenants.
 
-Failures are not memoized (deliberately - a repaired tenant must not stay broken until restart), but they are **rate limited**: a failed `GetOrAdd` records the name with a cooldown (`FailureCooldown`, 5000 ms by default, settable, `0` disables it) and repeats within that window re-raise the recorded message without touching the disk. The cost of an anonymous caller rotating the `Host` header stops being a function of traffic, and an operator's repair takes effect within the cooldown rather than at restart. The failure table is capped at 128 names and expired entries are swept on every insert, so the client cannot grow it.
+A `GetOrAdd` that cannot build the tenant always raises **`ETTenantUnavailable`**, carrying `TenantName` and `OriginalClassName` and keeping the original message - the underlying exception never reaches the caller, so the class you catch does not depend on timing. Failures are not memoized (deliberately - a repaired tenant must not stay broken until restart), but they are **rate limited**: a failed `GetOrAdd` records the name with a cooldown (`FailureCooldown`, 5000 ms by default, settable, `0` disables it) and repeats within that window fail without touching the disk. The cost of an anonymous caller rotating the `Host` header stops being a function of traffic, and an operator's repair takes effect within the cooldown rather than at restart. The failure table is capped at 128 names and expired entries are swept on every insert, so the client cannot grow it.
 
 `Remove(AName)` detaches the tenant from the registry - `TryGet` and `GetAll` stop seeing it - but **does not destroy it**. Tenants handed out by `TryGet`/`GetOrAdd` are borrowed references, and a thread that resolved one an instant earlier may be about to use its connection; the instance is released with the registry. Reclaiming memory per tenant would need a use count, which is a design decision, not a call you can make from `Remove`.
 
@@ -1218,7 +1226,7 @@ In `GetParameters`, zero the record first: `Result := Default(TTFireDACConnectio
 
 Subclass `TTHttpLogAbstractWriter` (override `WriteAction`/`WriteRequest`/`WriteResponse`, optionally `WriteDiscarded`) and register with `RegisterLogWriter<W>()`. The writer can persist log rows through its own Trysil context.
 
-Three registration overloads: no argument (one log thread), a thread pool size, or a `TTHttpLogParameters` record carrying `ThreadPoolSize`, `QueueCapacity` and `MaxContentLength` (negative = unlimited).
+Three registration overloads: no argument (one log thread), a thread pool size, or a `TTHttpLogParameters` record carrying `ThreadPoolSize`, `QueueCapacity`, `MaxContentLength` and `MaxItemCount` (negative = unlimited). The two shorter forms apply **finite defaults** - 64 KB of content, 128 items - so unlimited is something you ask for, not something you get by not asking. `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and `X-Api-Key` reach the writer with their name and `<redacted>` instead of the value.
 
 ```delphi
 FServer.RegisterLogWriter<TAPILogWriter>(
@@ -1233,7 +1241,8 @@ FServer.OnCanLog :=
 
 - **`OnCanLog`** is asked on the request thread **before** the log record is built. Returning `False` costs nothing: no body serialization, no copy, no queue, no INSERT. Assign it before `Start`; it runs on every request thread, so keep it thread-safe and resolve tenants with `TryGet`.
 - **`LogRequest` runs before routing and authentication.** `WriteRequest` is invoked for 404s and 401s too, so in a per-database multi-tenant app an anonymous caller can push rows into the log database of whatever tenant it names in `Host`. `OnCanLog` is where you reject or divert them.
-- **Bodies above `MaxContentLength` are not captured at all**, and the size is measured without touching the body. The omission is declared: `ToJSon` always writes `ContentLength`, and `ContentOmitted: true` replaces `Content`.
+- **Bodies above `MaxContentLength` are not captured at all**, and the size is measured without touching the body. The omission is declared: `ToJSon` always writes `ContentLength`, and `ContentOmitted: true` replaces `Content`. `Params` follows `Content`, because with `application/x-www-form-urlencoded` Indy decodes the whole body into the parameters - the parameters *are* the body. `MaxItemCount` caps parameters and headers by count, which a byte cap does not do; `ParamsOmitted` and `HeadersOmitted` declare it, and the counts are always written.
+- **Header lookup is case insensitive.** `ARequest.Headers.Value['Authorization']` matches whatever case the client sent, which matters because HTTP/2 mandates lower-case header names. Query parameters are **not** case insensitive: `ARequest.Parameters` keeps exact-match semantics, as the URL spec requires.
 - **The queue has a cap.** When full the newest entry is rejected and counted per host; the log thread then reports it through `WriteDiscarded(ADiscarded: TTHttpLogDiscarded)`, which carries `Host` and `Count`. It is virtual but not abstract - existing writers still compile, and the default forwards to `WriteAction`. The host is sanitized and truncated before it becomes a key or reaches the report, distinct hosts are capped at 64 with the rest accumulating under `<other>`, and the counts are flushed on a timer as well as when the queue empties - under sustained load the queue never empties.
 - **Unhandled errors have their own hook.** `WriteError(ALogError: TTHttpLogError)` receives the task id, host, uri, exception class and message, and the recorded nested class and message. Like `WriteDiscarded` it is virtual, not abstract, and its default forwards to `WriteAction`. The exception is rendered to strings **synchronously on the request thread** and only the strings are queued - the exception object does not survive the handler. It is not gated by `OnCanLog`: an error row is always worth writing.
 
@@ -1254,7 +1263,7 @@ The listener catches every exception centrally and turns it into the JSON respon
   | `ETHttpInternalServerError` | 500 |
   | `ETHttpException.Create(code, msg)` | any code you pass |
 
-- **Every other exception becomes HTTP 500**, and the 500 body is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two. That includes the ORM's `ETValidationException`, `ETConcurrentUpdateException`, and `ETDataIntegrityException`. There is **no automatic ORM-to-HTTP mapping**. To return 400 on a failed validation or 409 on a version conflict, catch the ORM exception in the controller and re-raise as an `ETHttp*`:
+- **Every other exception becomes HTTP 500**, and the body of any response of status 500 or above is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The listener routes by status code, not by class, so `raise ETHttpInternalServerError.Create(E.Message)` does not put that message on the wire either. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two - which means an application with no registered log writer has a 5xx with no detail anywhere. That includes the ORM's `ETValidationException`, `ETConcurrentUpdateException`, and `ETDataIntegrityException`. There is **no automatic ORM-to-HTTP mapping**. To return 400 on a failed validation or 409 on a version conflict, catch the ORM exception in the controller and re-raise as an `ETHttp*`:
 
 ```delphi
 procedure TAPIReadWriteController<T>.Update;
