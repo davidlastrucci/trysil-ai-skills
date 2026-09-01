@@ -351,6 +351,8 @@ end;
 
 Conditions: `Equal`, `NotEqual`, `Greater`, `GreaterOrEqual`, `Less`, `LessOrEqual`, `Like`, `NotLike`, `IsNull`, `IsNotNull`. Combine with `Where`/`AndWhere`/`OrWhere`. Paging/order: `OrderByAsc`/`OrderByDesc`, `Limit`, `Offset`. Use `TTFilter.Empty` for "no filter" and `SelectCount<T>(AFilter)` for counts.
 
+Paging takes a page size, and the offset is optional: `Limit(20)` on its own pages from the first row, so the `Offset(0)` is not needed. An **offset without a limit raises** `ETException`, because "skip 500 and return everything after it" has no portable SQL across the seven dialects - if you want that, pass a limit large enough to cover the tail.
+
 The value-taking conditions (`Equal`, `Greater`, `Like`, …) each take a single `const AValue: TTValue` parameter - there are **no** per-type overloads. `TTValue` accepts any scalar (`String`, `Integer`, `Double`, `Currency`, `Boolean`, `TDateTime`, …) by implicit conversion, so pass the value directly whatever its type: `.Where('Description').Equal('Widget')`, `.AndWhere('Price').Greater(5.0)`, `.AndWhere('BrandID').Equal(LBrand.ID)`.
 
 ## 5a. Expression API - grouped conditions (`Trysil.Filter.Expression`)

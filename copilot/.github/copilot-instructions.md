@@ -352,6 +352,8 @@ end;
 
 Conditions: `Equal`, `NotEqual`, `Greater`, `GreaterOrEqual`, `Less`, `LessOrEqual`, `Like`, `NotLike`, `IsNull`, `IsNotNull`. Combine with `Where`/`AndWhere`/`OrWhere`. Paging/order: `OrderByAsc`/`OrderByDesc`, `Limit`, `Offset`. Use `TTFilter.Empty` for "no filter" and `SelectCount<T>(AFilter)` for counts.
 
+Paging takes a page size, and the offset is optional: `Limit(20)` on its own pages from the first row, so the `Offset(0)` is not needed. An **offset without a limit raises** `ETException`, because "skip 500 and return everything after it" has no portable SQL across the seven dialects - if you want that, pass a limit large enough to cover the tail.
+
 The value-taking conditions (`Equal`, `Greater`, `Like`, …) each take a single `const AValue: TTValue` parameter - there are **no** per-type overloads. `TTValue` accepts any scalar (`String`, `Integer`, `Double`, `Currency`, `Boolean`, `TDateTime`, …) by implicit conversion, so pass the value directly whatever its type: `.Where('Description').Equal('Widget')`, `.AndWhere('Price').Greater(5.0)`, `.AndWhere('BrandID').Equal(LBrand.ID)`.
 
 ## 5a. Expression API - grouped conditions (`Trysil.Filter.Expression`)
@@ -771,7 +773,7 @@ constructor Create(const AMaxLevels: Integer; const ADetails: Boolean);
 ```
 
 - `AMaxLevels` - max nesting depth for related entities; `-1` = unlimited, `0` = none (relations emitted as IDs only).
-- `ADetails` - include detail (1:N) collections.
+- `ADetails` - include detail (1:N) collections. It is a switch, not a depth: `AMaxLevels` bounds detail collections as well, so `Create(0, True)` emits no details at all and `Create(1, True)` emits one level of them.
 
 `AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on. Use `0` on list endpoints to avoid `rows x N:1 relations` round trips.
 
@@ -828,11 +830,29 @@ end;
 ```delphi
 function EntityFromJSon<T: class>(const AJSon: String): T;
 function EntityFromJSonObject<T: class>(const AJSon: TJSonValue): T;
+procedure EntityFromJSon<T: class>(const AJSon: String; const AEntity: T);
+procedure EntityFromJSonObject<T: class>(const AJSon: TJSonValue; const AEntity: T);
 procedure ListFromJSon<T: class>(const AJSon: String; const AList: TList<T>);
 procedure ListFromJSonArray<T: class>(const AJSon: TJSonArray; const AList: TList<T>);
 ```
 
 `EntityFromJSon*` returns a **new entity that you own** - free it (or add it to an owning list). `ListFromJSon*` fills a caller-owned list (use `TTObjectList<T>.Create(True)` so the list frees its items).
+
+The two-argument overloads fill an entity you already loaded instead of building a fresh one. **Use them for an update endpoint**: `Update<T>` writes the whole row, so with a fresh entity every column absent from the request body is written back blank. Filling a loaded entity keeps what the body does not mention.
+
+```delphi
+LEntity := FJSonContext.Get<TCustomer>(AID);
+try
+  FJSonContext.EntityFromJSonObject<TCustomer>(FRequest.JSonContent, LEntity);
+  FJSonContext.Update<TCustomer>(LEntity);
+finally
+  LEntity.Free;
+end;
+```
+
+Three rules for that overload: the identity map is forbidden in a `TTJSonContext`, so `Get<T>` hands back an entity nobody owns and the `try..finally` is mandatory; the semantics are replace-all, not merge, so a `TTNullable` column absent from the body becomes NULL; and if the entity carries a `TTLazyList<T>` detail, the list is cleared and its already-loaded items are **freed**, so take references to detail entities after the call, never before.
+
+Change tracking columns (`[TCreatedAt]`, `[TCreatedBy]`, `[TUpdatedAt]`, `[TUpdatedBy]`, `[TDeletedAt]`, `[TDeletedBy]`) are skipped by every deserialization entry point: they are the framework's to write, and a value for them in a request body is ignored. If you build a response from a fresh entity you just updated, call `Refresh<T>` first or those columns come back blank.
 
 ```delphi
 LRestored := FJSonContext.EntityFromJSon<TCustomer>(LJson);
@@ -901,7 +921,7 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 | `[TUri]`, `[TGet]`, `[TPost]`, `[TPut]`, `[TDelete]`, `[TArea]`, `[TAuthorizationType]` | `Trysil.Http.Attributes` |
 | `TTHttpAuthorizationType` | `Trysil.Http.Types` |
 | CORS config (`FServer.CorsConfig`) | `Trysil.Http.Cors` |
-| `TTHttpAuthenticationBasic`/`Bearer`/`Digest<C>` | `Trysil.Http.Authentication.{Basic,Bearer,Digest}` |
+| `TTHttpAuthenticationBasic`/`Bearer<C>` | `Trysil.Http.Authentication.{Basic,Bearer}` (`Digest` exists in `...Authentication.Digest` but is deprecated) |
 | `TTHttpJWT<P>` | `Trysil.Http.JWT` |
 | `TTHttpJWTAbstractPayload`, `ETHttpJWTException` | `Trysil.Http.JWT.Payload` |
 | `TTHttpJWTHS256Payload` | `Trysil.Http.JWT.Payload.HS256` |
@@ -1082,9 +1102,11 @@ Set `FServer.CorsConfig.AllowHeaders` / `AllowOrigin`. The server adds CORS head
 
 Subclass the scheme you want, override the validation hooks, register one implementation with `RegisterAuthentication<H>()`. Mark public endpoints (login) with `[TAuthorizationType(TTHttpAuthorizationType.None)]`.
 
+**A route without `[TAuthorizationType]` requires authentication.** `Start` refuses to bind the socket if any route needs authentication and no authentication class was registered, so a `RegisterAuthentication` left inside a conditional branch fails loudly instead of serving every route anonymously. A server that really is fully public declares it in one line: `FServer.AllowAnonymous := True;`.
+
 - **Basic** - `TTHttpAuthenticationBasic<C>`: override `IsValid(const AUser: TTHttpUser): Boolean`, set `Realm`.
 - **Bearer/JWT** - `TTHttpAuthenticationBearer<C, P: TTHttpJWTAbstractPayload>`: override `CreatePayload` and `IsValid(const APayload: P)`.
-- **Digest** - `TTHttpAuthenticationDigest<C>`: override `GetNonce`, `IsValidNonce`, `GetUserMD5`.
+- **Digest** - `TTHttpAuthenticationDigest<C>`: **deprecated, do not use for new code.** It implements RFC 2069, the 1997 form: no `qop`, no `nc`, no `cnonce`, and a captured response stays replayable while its nonce is accepted. Use Bearer with JWT, or Basic over TLS.
 
 ### JWT (`Trysil.Http.JWT`)
 
@@ -1240,6 +1262,8 @@ FServer.OnCanLog :=
 ```
 
 - **`OnCanLog`** is asked on the request thread **before** the log record is built. Returning `False` costs nothing: no body serialization, no copy, no queue, no INSERT. Assign it before `Start`; it runs on every request thread, so keep it thread-safe and resolve tenants with `TryGet`.
+- **`OnRedactContent`** is the hook for the bodies: `TFunc<TTHttpRequest, String, String>` receiving the request and the content, returning what gets logged. Headers were already redacted through a fixed list, bodies were not, so without it a JSON API logs the password of every `POST /login` and the token in every login response. It is applied to the request body and the response body, is `nil` by default, and like `OnCanLog` must be assigned before `Start`. Note the scope: it does **not** reach the query parameters, which go through the fixed header-name list (`Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie`, `X-Api-Key`), so a parameter called `token` or `password` is still logged in clear - keep secrets out of the URL.
+- **A hook that raises cannot break the request.** `LogRequest`, `LogResponse`, `LogError` and `LogAction` swallow exceptions: logging must never break the operation being logged. What a hook returns is not required to be JSON either - a body that does not parse is logged as a string rather than disappearing from the entry.
 - **`LogRequest` runs before routing and authentication.** `WriteRequest` is invoked for 404s and 401s too, so in a per-database multi-tenant app an anonymous caller can push rows into the log database of whatever tenant it names in `Host`. `OnCanLog` is where you reject or divert them.
 - **Bodies above `MaxContentLength` are not captured at all**, and the size is measured without touching the body. The omission is declared: `ToJSon` always writes `ContentLength`, and `ContentOmitted: true` replaces `Content`. `Params` follows `Content`, because with `application/x-www-form-urlencoded` Indy decodes the whole body into the parameters - the parameters *are* the body. `MaxItemCount` caps parameters and headers by count, which a byte cap does not do; `ParamsOmitted` and `HeadersOmitted` declare it, and the counts are always written.
 - **Header lookup is case insensitive.** `ARequest.Headers.Value['Authorization']` matches whatever case the client sent, which matters because HTTP/2 mandates lower-case header names. Query parameters are **not** case insensitive: `ARequest.Parameters` keeps exact-match semantics, as the URL spec requires.
