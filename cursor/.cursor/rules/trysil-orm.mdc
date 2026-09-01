@@ -320,7 +320,7 @@ FContext.ApplyAll<TCustomer>(LInsertList, LUpdateList, LDeleteList);
 ```
 
 Notes:
-- `CreateEntity<T>` returns an entity with the sequence ID already assigned (never ID=0) - no post-`Save` FK patching needed.
+- `CreateEntity<T>` returns an entity with the sequence ID already assigned (never ID=0) - no post-`Save` FK patching needed. This costs one database round trip per entity, paid even for an entity you never insert, and on the six drivers backed by a real sequence a discarded value leaves a gap in the numbering. Creating entities in bulk therefore costs `2N` round trips for `N` rows: create them as late as you can.
 - `Update<T>` rewrites the whole row (no per-field diff); it emits an UPDATE even if nothing changed.
 - When the identity map is on, the context **owns** the entities it returns - do not free them yourself.
 - `Refresh<T>(entity)` reloads in place an entity you already hold; `Get<T>(id)` fetches by primary key and returns an instance.
