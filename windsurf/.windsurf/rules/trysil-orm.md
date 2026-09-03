@@ -594,7 +594,9 @@ Expose every change-tracking column through a read-only property (as you do for 
 | `[TUpdatedAt]` / `[TUpdatedBy]` | Update |
 | `[TDeletedAt]` / `[TDeletedBy]` | Delete (soft) |
 
-With `[TDeletedAt]` present, `Delete<T>` does **not** issue SQL DELETE - it UPDATEs `DeletedAt`/`DeletedBy` and bumps the version. All SELECTs add `DeletedAt IS NULL`. To include soft-deleted rows: `TTFilter.IncludeDeleted := True` or `.IncludeDeleted` on the builder.
+`[TDeletedBy]` cannot be declared without `[TDeletedAt]`, and one column cannot carry two tracking attributes: both are refused at mapping time, on the first `Load`. The other two pairs may be declared half. `Update<T>` writes only the update pair - creation and deletion columns are set by `Insert`, `Delete` and `Undelete` and are out of its `SET` list - and `Undelete<T>` stamps the update pair like any other change.
+
+With `[TDeletedAt]` present, `Delete<T>` does **not** issue SQL DELETE - it UPDATEs `DeletedAt`/`DeletedBy` and bumps the version. All SELECTs add `DeletedAt IS NULL`, and so do `UPDATE` and the soft `DELETE`: a soft-deleted row cannot be edited, resurrected, or deleted a second time over its own audit. The guard comes from the mapping, so a second class on the same table without `[TDeletedAt]` still reaches the row. To include soft-deleted rows: `TTFilter.IncludeDeleted := True` or `.IncludeDeleted` on the builder.
 
 ## 9. JOIN queries (read-only)
 

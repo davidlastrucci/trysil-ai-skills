@@ -595,7 +595,9 @@ Expose every change-tracking column through a read-only property (as you do for 
 | `[TUpdatedAt]` / `[TUpdatedBy]` | Update |
 | `[TDeletedAt]` / `[TDeletedBy]` | Delete (soft) |
 
-With `[TDeletedAt]` present, `Delete<T>` does **not** issue SQL DELETE - it UPDATEs `DeletedAt`/`DeletedBy` and bumps the version. All SELECTs add `DeletedAt IS NULL`. To include soft-deleted rows: `TTFilter.IncludeDeleted := True` or `.IncludeDeleted` on the builder.
+`[TDeletedBy]` cannot be declared without `[TDeletedAt]`, and one column cannot carry two tracking attributes: both are refused at mapping time, on the first `Load`. The other two pairs may be declared half. `Update<T>` writes only the update pair - creation and deletion columns are set by `Insert`, `Delete` and `Undelete` and are out of its `SET` list - and `Undelete<T>` stamps the update pair like any other change.
+
+With `[TDeletedAt]` present, `Delete<T>` does **not** issue SQL DELETE - it UPDATEs `DeletedAt`/`DeletedBy` and bumps the version. All SELECTs add `DeletedAt IS NULL`, and so do `UPDATE` and the soft `DELETE`: a soft-deleted row cannot be edited, resurrected, or deleted a second time over its own audit. The guard comes from the mapping, so a second class on the same table without `[TDeletedAt]` still reaches the row. To include soft-deleted rows: `TTFilter.IncludeDeleted := True` or `.IncludeDeleted` on the builder.
 
 ## 9. JOIN queries (read-only)
 
@@ -1102,7 +1104,9 @@ Set `FServer.CorsConfig.AllowHeaders` / `AllowOrigin`. The server adds CORS head
 
 Subclass the scheme you want, override the validation hooks, register one implementation with `RegisterAuthentication<H>()`. Mark public endpoints (login) with `[TAuthorizationType(TTHttpAuthorizationType.None)]`.
 
-**A route without `[TAuthorizationType]` requires authentication.** `Start` refuses to bind the socket if any route needs authentication and no authentication class was registered, so a `RegisterAuthentication` left inside a conditional branch fails loudly instead of serving every route anonymously. A server that really is fully public declares it in one line: `FServer.AllowAnonymous := True;`.
+**A route without `[TAuthorizationType]` requires authentication.** `Start` refuses to bind the socket if any route needs authentication and no authentication class was registered, so a `RegisterAuthentication` left inside a conditional branch fails loudly instead of serving every route anonymously. A server that really is fully public declares it in one line: `FServer.AllowAnonymous := True;` - which waives that check only, never the two below.
+
+**`Start` also refuses two ways of writing an area that cannot work**: a route carrying `[TArea]` with no authentication class registered (`AllowAnonymous` or not - with no user there are no areas, so the attribute would restrict nothing), and a route carrying both `[TArea]` and `[TAuthorizationType(TTHttpAuthorizationType.None)]` (authentication does not run there, so its user carries no area and the route would answer 403 to everyone forever). An area declared on the controller class, or on an ancestor of an overridden method, is inherited; overloads of the same name do not share areas. The area check itself does not depend on an authentication class being present: with no user, a route carrying `[TArea]` answers 403.
 
 - **Basic** - `TTHttpAuthenticationBasic<C>`: override `IsValid(const AUser: TTHttpUser): Boolean`, set `Realm`.
 - **Bearer/JWT** - `TTHttpAuthenticationBearer<C, P: TTHttpJWTAbstractPayload>`: override `CreatePayload` and `IsValid(const APayload: P)`.
@@ -1285,10 +1289,11 @@ The listener catches every exception centrally and turns it into the JSON respon
   | `ETHttpNotFound` | 404 |
   | `ETHttpMethodNotAllowed` | 405 |
   | `ETHttpConflict` | 409 |
+  | `ETHttpUnprocessableContent` | 422 |
   | `ETHttpInternalServerError` | 500 |
   | `ETHttpException.Create(code, msg)` | any code you pass |
 
-- **Every other exception becomes HTTP 500**, and the body of any response of status 500 or above is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The listener routes by status code, not by class, so `raise ETHttpInternalServerError.Create(E.Message)` does not put that message on the wire either. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two - which means an application with no registered log writer has a 5xx with no detail anywhere. That includes the ORM's `ETValidationException`, `ETConcurrentUpdateException`, and `ETDataIntegrityException`. There is **no automatic ORM-to-HTTP mapping**. To return 400 on a failed validation or 409 on a version conflict, catch the ORM exception in the controller and re-raise as an `ETHttp*`:
+- **Every other exception becomes HTTP 500**, and the body of any response of status 500 or above is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The listener routes by status code, not by class, so `raise ETHttpInternalServerError.Create(E.Message)` does not put that message on the wire either. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two - which means an application with no registered log writer has a 5xx with no detail anywhere. Two ORM exceptions are mapped for you, from 2.0.0: an `ETConcurrentUpdateException` that escapes a controller becomes **409** and an `ETValidationException` becomes **422**, both carrying the original message in the usual `status` / `message` body, both logged with `LogAction`. `ETDataIntegrityException` is **not** mapped and still becomes a 500. Catch them in the controller only when you want a different status:
 
 ```delphi
 procedure TAPIReadWriteController<T>.Update;
