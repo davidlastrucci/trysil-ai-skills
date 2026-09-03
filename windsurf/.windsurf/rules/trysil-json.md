@@ -172,5 +172,6 @@ FInternalCode: String;
 ## Reminders
 - Free the context before the connection.
 - `TTNullable<T>` fields serialize as `null` when unset.
+- `MetadataToJSon<T>` reports each column as `name`, `type` and, when they are not zero, `size` and `precision`. On a decimal column the names mislead: **`size` is the scale**, `precision` the total number of digits, so `decimal(19,4)` comes back as `"size": 4, "precision": 19`. A client validating an amount needs both.
 - `Currency` fields serialize as an exact decimal number - four decimals, invariant format, so `1234.5678` stays `1234.5678` instead of coming out as a rebuilt float - and deserialize back the same way.
 - `*Object`/`*Array` serializers and `EntityFromJSon*`/`ListFromJSon*` hand you objects you own - free them or add them to an owning parent/list.

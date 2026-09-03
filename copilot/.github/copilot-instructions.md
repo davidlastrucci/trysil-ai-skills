@@ -278,7 +278,7 @@ Trysil maps to **existing** tables - it does not create, migrate, or alter the s
 | `TGuid` | `ftGuid` | `UNIQUEIDENTIFIER` / `CHAR(36)` / `UUID` |
 | `TBytes` | `ftBlob` | `BLOB` / `VARBINARY` / `BYTEA` |
 
-- Use `Currency` for money, not `Double`. `Currency` is a fixed-point type exact to four decimal places, and Trysil maps it end to end without ever converting through `Double`: values are read with `TField.AsCurrency` and written with the parameter's `AsCurrency`, so the four decimals survive the round trip. `TTNullable<Currency>` works the same way. Pair it with a `DECIMAL(19,4)` column - Firebird and InterBase cap precision at 18 digits, so declare `DECIMAL(18,4)` there, and Oracle spells it `NUMBER(19,4)`. SQLite has no decimal type at all: the column keeps NUMERIC affinity but the value is stored as a float, so exactness there is limited to what a double can hold.
+- Use `Currency` for money, not `Double`. `Currency` is a fixed-point type exact to four decimal places, and Trysil maps it end to end without ever converting through `Double`: values are read with `TField.AsCurrency` and written with the parameter's `AsCurrency`, so the four decimals survive the round trip. `TTNullable<Currency>` works the same way. Pair it with a `DECIMAL(19,4)` column - Firebird and InterBase cap precision at 18 digits, so declare `DECIMAL(18,4)` there, and Oracle spells it `NUMBER(19,4)`. SQLite has no decimal type at all: the column keeps NUMERIC affinity but the value is stored as a float, so exactness there is limited to what a double can hold. On PostgreSQL the driver configures the connection so a currency parameter is not sent as `money`, which would round the amount to two decimals on the way in; this is automatic, but a class deriving from `TTPostgreSQLConnection` that overrides `ConfigureConnection` must call `inherited`.
 - Use `Double` for genuine floating-point quantities (measures, ratios, coordinates), not for amounts of money.
 - Enumerations are stored as their integer ordinal (`INT`) and converted via RTTI; no dedicated column type.
 - `TTNullable<T>` maps to the same type as `T` - just make the DB column nullable.
@@ -903,6 +903,7 @@ FInternalCode: String;
 ## Reminders
 - Free the context before the connection.
 - `TTNullable<T>` fields serialize as `null` when unset.
+- `MetadataToJSon<T>` reports each column as `name`, `type` and, when they are not zero, `size` and `precision`. On a decimal column the names mislead: **`size` is the scale**, `precision` the total number of digits, so `decimal(19,4)` comes back as `"size": 4, "precision": 19`. A client validating an amount needs both.
 - `Currency` fields serialize as an exact decimal number - four decimals, invariant format, so `1234.5678` stays `1234.5678` instead of coming out as a rebuilt float - and deserialize back the same way.
 - `*Object`/`*Array` serializers and `EntityFromJSon*`/`ListFromJSon*` hand you objects you own - free them or add them to an owning parent/list.
 
