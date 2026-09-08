@@ -431,7 +431,7 @@ for LCustomer in LList.Where(
 
 `Where(nil)` enumerates everything. Use this to filter an **already-loaded** set (no DB round-trip, no raw SQL) - e.g. live search over a list held in memory; use `TTFilterBuilder<T>`/`TTFilter` when you want the database to do the filtering.
 
-Other types in the unit: `TTObjectList<T>` (owns items - frees on remove when `OwnsObjects`), `TTObjectLazyList<T>` (adds `IsValid` for lazy 1:N lists), `TTHashList<T>` (dictionary-backed set: `Add`/`Contains`/`Remove`).
+Other types in the unit: `TTObjectList<T>` (owns items - frees on remove when `OwnsObjects`), `TTHashList<T>` (dictionary-backed set: `Add`/`Contains`/`Remove`).
 
 ## 6. Lazy loading (`Trysil.Lazy`)
 
