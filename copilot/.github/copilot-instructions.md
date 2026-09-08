@@ -408,8 +408,10 @@ end;
   `OrderByDesc(const AProperty: TTProperty)`. They share the same `:pN`
   parameter counter as the fluent string form, so the two mix in one builder.
 - For JOIN entities use the two-argument `TTProperty.Create(Alias, Column)` -
-  it qualifies the WHERE reference as `Alias.Column`. The fluent string form
-  (`.Where('Column')`) does not qualify aliases.
+  it qualifies the WHERE reference as `Alias.Column`. From 2.0.0 the fluent
+  string form qualifies as well: pass the output alias the metadata carry,
+  `.Where('Customers_CompanyName')`, and it reaches the engine as
+  `"Customers"."CompanyName"`.
 
 ## 5b. In-memory filtering - `TTList<T>.Where` (`Trysil.Generics.Collections`)
 
@@ -619,7 +621,7 @@ With `[TDeletedAt]` present, `Delete<T>` does **not** issue SQL DELETE - it UPDA
 
 ## 9. JOIN queries (read-only)
 
-`[TJoin(Kind, 'Table'[, 'Alias'][, 'SourceTableOrAlias'], 'SourceCol', 'TargetCol')]` (`TJoinKind` = `Inner`/`Left`/`Right`) plus the 2-arg `[TColumn('Alias','Col')]`. Join entities are read-only - `Insert`/`Update`/`Delete` raise `ETException`. `TTFilterBuilder` does not resolve join aliases; use `TTFilter.Create(whereClause)` with manually qualified column names.
+`[TJoin(Kind, 'Table'[, 'Alias'][, 'SourceTableOrAlias'], 'SourceCol', 'TargetCol')]` (`TJoinKind` = `Inner`/`Left`/`Right`) plus the 2-arg `[TColumn('Alias','Col')]`. Join entities are read-only - `Insert`/`Update`/`Delete` raise `ETException`. `TTFilterBuilder` resolves join aliases from 2.0.0, in both the expression form and the fluent string form.
 
 ## 10. Raw select
 
