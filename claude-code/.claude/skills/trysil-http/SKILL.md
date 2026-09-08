@@ -347,7 +347,7 @@ In `GetParameters`, zero the record first: `Result := Default(TTFireDACConnectio
 
 Subclass `TTHttpLogAbstractWriter` (override `WriteAction`/`WriteRequest`/`WriteResponse`, optionally `WriteDiscarded`) and register with `RegisterLogWriter<W>()`. The writer can persist log rows through its own Trysil context.
 
-Three registration overloads: no argument (one log thread), a thread pool size, or a `TTHttpLogParameters` record carrying `ThreadPoolSize`, `QueueCapacity`, `MaxContentLength` and `MaxItemCount` (negative = unlimited). The two shorter forms apply **finite defaults** - 64 KB of content, 128 items - so unlimited is something you ask for, not something you get by not asking. `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and `X-Api-Key` reach the writer with their name and `<redacted>` instead of the value.
+Three registration overloads: no argument (one log thread), a thread pool size, or a `TTHttpLogParameters` record carrying `ThreadPoolSize`, `QueueCapacity`, `MaxContentLength` and `MaxItemCount` (negative = unlimited). **Every value left unsaid means the same thing**, whether you use a short registration overload or one of the short constructors of the record: no body at all, 128 items, one thread, a queue of 10 000, readable as `TTHttpLogParameters.DefaultMaxContentLength` and the three beside it. Unlimited is something you ask for with a negative value, not something you get by not asking - `Create(4, 20000)` does **not** reopen body capture. `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and `X-Api-Key` reach the writer with their name and `<redacted>` instead of the value.
 
 ```delphi
 FServer.RegisterLogWriter<TAPILogWriter>(

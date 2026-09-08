@@ -188,9 +188,17 @@ LMeta := FJSonContext.MetadataToJSon<TCustomer>();
 FInternalCode: String;
 ```
 
+From 2.0.0 `MetadataToJSon<T>` skips them too: the metadata describe what the
+entity serializes, not what it maps.
+
+**Pair it with `[TNotFilterable]`.** A column kept out of every response but
+still reachable from the server-side filter is the classic hole: `LIKE` plus
+the row count in the response recovers a value one character at a time without
+it ever being serialized. `[TJSonIgnore]` alone does not close it.
+
 ## Reminders
 - Free the context before the connection.
 - `TTNullable<T>` fields serialize as `null` when unset.
-- `MetadataToJSon<T>` reports each column as `name`, `type` and, when they are not zero, `size` and `precision`. On a decimal column the names mislead: **`size` is the scale**, `precision` the total number of digits, so `decimal(19,4)` comes back as `"size": 4, "precision": 19`. A client validating an amount needs both.
+- `MetadataToJSon<T>` reports each **serialized** member as `name`, `type` and, when they are not zero, `size` and `precision`; a member marked `[TJSonIgnore]` is not described at all. On a decimal column the names mislead: **`size` is the scale**, `precision` the total number of digits, so `decimal(19,4)` comes back as `"size": 4, "precision": 19`. A client validating an amount needs both.
 - `Currency` fields serialize as an exact decimal number - four decimals, invariant format, so `1234.5678` stays `1234.5678` instead of coming out as a rebuilt float - and deserialize back the same way.
 - `*Object`/`*Array` serializers and `EntityFromJSon*`/`ListFromJSon*` hand you objects you own - free them or add them to an owning parent/list.

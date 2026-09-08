@@ -286,7 +286,7 @@ Trysil maps to **existing** tables - it does not create, migrate, or alter the s
 | `Integer` / `TTPrimaryKey` / `TTVersion` | `ftInteger` (`ftSmallint`) | `INT` |
 | `Int64` | `ftLargeint` | `BIGINT` |
 | `String` | `ftWideString` / `ftString` | `NVARCHAR(n)` / `VARCHAR(n)` |
-| `String` (long text) | `ftWideMemo` / `ftMemo` | `NTEXT` / `TEXT` |
+| `String` (text LOB) | `ftWideMemo` / `ftMemo` / `ftOraClob` | `TEXT` / `LONGTEXT` / `nvarchar(max)` / `CLOB` / `BLOB SUB_TYPE TEXT` |
 | `Double` | `ftFloat` (`ftBCD`/`ftFMTBcd`/`ftCurrency`/`ftSingle`) | `FLOAT` / `NUMERIC(p,s)` |
 | `Currency` | `ftBCD` / `ftFMTBcd` (`ftCurrency`/`ftFloat`) | `DECIMAL(19,4)` / `NUMERIC(19,4)` |
 | `Boolean` | `ftBoolean` | `BOOLEAN` / `BIT` |
@@ -294,7 +294,8 @@ Trysil maps to **existing** tables - it does not create, migrate, or alter the s
 | `TGuid` | `ftGuid` | `UNIQUEIDENTIFIER` / `CHAR(36)` / `UUID` |
 | `TBytes` | `ftBlob` | `BLOB` / `VARBINARY` / `BYTEA` |
 
-- Use `Currency` for money, not `Double`. `Currency` is a fixed-point type exact to four decimal places, and Trysil maps it end to end without ever converting through `Double`: values are read with `TField.AsCurrency` and written with the parameter's `AsCurrency`, so the four decimals survive the round trip. `TTNullable<Currency>` works the same way. Pair it with a `DECIMAL(19,4)` column - Firebird and InterBase cap precision at 18 digits, so declare `DECIMAL(18,4)` there, and Oracle spells it `NUMBER(19,4)`. SQLite has no decimal type at all: the column keeps NUMERIC affinity but the value is stored as a float, so exactness there is limited to what a double can hold. On PostgreSQL the driver configures the connection so a currency parameter is not sent as `money`, which would round the amount to two decimals on the way in; this is automatic, but a class deriving from `TTPostgreSQLConnection` that overrides `ConfigureConnection` must call `inherited`.
+- Use `Currency` for money, not `Double`. `Currency` is a fixed-point type exact to four decimal places, and Trysil maps it end to end without ever converting through `Double`: values are read with `TField.AsCurrency` and written with the parameter's `AsCurrency`, so the four decimals survive the round trip. `TTNullable<Currency>` works the same way. Pair it with a `DECIMAL(19,4)` column - Firebird and InterBase cap precision at 18 digits, so declare `DECIMAL(18,4)` there, and Oracle spells it `NUMBER(19,4)`. SQLite has no decimal type at all: the column keeps NUMERIC affinity but the value is stored as a float, so exactness there is limited to what a double can hold. On PostgreSQL the driver configures the connection so a currency parameter is not sent as `money`, which would round the amount to two decimals on the way in; this is automatic, and from 2.0.0 it cannot be lost: `ConfigureConnection` is no longer virtual, the driver's rules live in `ConfigureMapRules`, and a descendant configures the connection by overriding `DoConfigureConnection`.
+- A **text LOB** is a plain `String` member: `CLOB`, `text`, `TEXT`, `LONGTEXT`, `nvarchar(max)` and `BLOB SUB_TYPE TEXT` are bound as LOBs, so a value longer than what a `VARCHAR2` bind accepts travels whole on Oracle too. The length guard does not apply to such a column, because it declares no length: use `[TMaxLength]` if you want a ceiling.
 - Use `Double` for genuine floating-point quantities (measures, ratios, coordinates), not for amounts of money.
 - Enumerations are stored as their integer ordinal (`INT`) and converted via RTTI; no dedicated column type.
 - `TTNullable<T>` maps to the same type as `T` - just make the DB column nullable.
