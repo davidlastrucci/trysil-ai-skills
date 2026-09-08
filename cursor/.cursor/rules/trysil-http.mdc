@@ -385,11 +385,14 @@ The listener catches every exception centrally and turns it into the JSON respon
   | `ETHttpNotFound` | 404 |
   | `ETHttpMethodNotAllowed` | 405 |
   | `ETHttpConflict` | 409 |
+  | `ETHttpContentTooLarge` | 413 |
   | `ETHttpUnprocessableContent` | 422 |
   | `ETHttpInternalServerError` | 500 |
   | `ETHttpException.Create(code, msg)` | any code you pass |
 
-- **Every other exception becomes HTTP 500**, and the body of any response of status 500 or above is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The listener routes by status code, not by class, so `raise ETHttpInternalServerError.Create(E.Message)` does not put that message on the wire either. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two - which means an application with no registered log writer has a 5xx with no detail anywhere. Two ORM exceptions are mapped for you, from 2.0.0: an `ETConcurrentUpdateException` that escapes a controller becomes **409** and an `ETValidationException` becomes **422**, both carrying the original message in the usual `status` / `message` body, both logged with `LogAction`. `ETDataIntegrityException` is **not** mapped and still becomes a 500. Catch them in the controller only when you want a different status:
+- **Every other exception becomes HTTP 500**, and the body of any response of status 500 or above is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The listener routes by status code, not by class, so `raise ETHttpInternalServerError.Create(E.Message)` does not put that message on the wire either. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two - which means an application with no registered log writer has a 5xx with no detail anywhere. Two ORM exceptions are mapped for you, from 2.0.0: an `ETConcurrentUpdateException` that escapes a controller becomes **409** and an `ETValidationException` becomes **422**, both carrying the original message in the usual `status` / `message` body, both logged with `LogAction`. An `ETJSonException` becomes **400**. `ETDataIntegrityException` is **not** mapped and still becomes a 500, because whether a broken constraint is the caller's fault or the schema's is not something the library can decide.
+
+**401 and 403 mean different things, and a client has to tell them apart.** `401` is "you sent no credential, or one of another scheme", and it carries `WWW-Authenticate`. A credential that was understood and refused - a token that does not verify, a password that does not match, a user your `IsValid` rejects - is **403**. So a client that renews its token on a `401` never renews: renew on **403**, or check expiry before calling. Catch them in the controller only when you want a different status:
 
 ```delphi
 procedure TAPIReadWriteController<T>.Update;
@@ -414,6 +417,33 @@ end;
 ```
 
 - On success the status is always **200 OK** (the `201 Created` constant exists but is unused). Set `FResponse.StatusCode` yourself for a different success code.
+
+## 11. Things the server refuses by default
+
+- **A request body is capped at 1 MB.** `TTHttpServer<C>.MaxRequestContentLength` (default `1048576`, `0` for unbounded) is answered `413` from `OnHeadersAvailable`, before a byte of the body is read. Raise it if you accept uploads or large batches.
+- **A `POST` that declares another method through a header is refused with `400`.** Indy honours `X-HTTP-Method-Override` and friends before Trysil sees the request, which walks past every proxy rule filtering on the request line. `TTHttpServer<C>.AllowMethodOverride` (default `False`) is where an application that needs it says so.
+- **`Save<T>` and `SaveAll<T>` raise on a `TTHttpContext`.** `Save` decides between insert and update from what the context created and has not written yet, and a context built and destroyed inside one request has no such history. Whether a request creates or updates is in the request: use `Insert<T>` and `Update<T>`.
+- **`Insert<T>` refuses a primary key of zero**, which is what a deserialized body has when it carries no id. Call `Context.SetSequenceID<T>(LEntity)` before inserting.
+- **A preflight is answered before authentication**, identically for every path, with `Access-Control-Max-Age`. Do not expect `OPTIONS` to reach a controller: a method declared with `[TOptions]` is never called.
+
+## Storing passwords
+
+Hashing is the application's - Trysil does not know where your users live. Three
+rules: hash with a **slow, salted** function (Argon2id, bcrypt), compare in
+**constant time**, and answer the same way and in the same time whether the user
+does not exist or the password is wrong.
+
+**The scheme decides what you can store.** Digest needs
+`HA1 = MD5(username:realm:password)`, so the database has to hold the plaintext
+password or an **unsalted MD5** - there is no way to derive `HA1` from a bcrypt,
+and RFC 7616 keeps the requirement word for word. **Bearer with JWT** is the
+only scheme that leaves you free: the password appears once, at your login
+endpoint, and no request after that carries one. Basic over TLS is reasonable
+when the caller is a machine and the secret is long and random.
+
+Trysil does the part that is its: `Authorization`, `Proxy-Authorization`,
+`Cookie`, `Set-Cookie` and `X-Api-Key` are written to the request log as
+`<redacted>` - with Basic that header **is** the password in base64.
 
 ## Lifecycle reminders
 - One `TAPIContext` (connection + `TTHttpContext`) is created and destroyed **per request** - keep `Create` cheap (assignments/object creation only; heavier work in `AfterConstruction`).

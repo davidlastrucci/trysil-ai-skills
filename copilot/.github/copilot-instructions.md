@@ -261,6 +261,23 @@ Add `{$WARN UNKNOWN_CUSTOM_ATTRIBUTE ERROR}` to units that use Trysil attributes
 ### Mapping is cached
 `TTMapper.Instance` is a global singleton converting classes to `TTTableMap` on first access.
 
+### Names with a schema
+
+`[TTable('dbo.Invoices')]` works: the name is split on the dot and each part is
+quoted on its own, so it reaches the database as `[dbo].[Invoices]` and not as
+one object with a dot in its name. Identifiers are quoted **after** being folded
+to the engine's default case - upper on Oracle, Firebird and InterBase, lower on
+PostgreSQL, unchanged on SQL Server, MariaDB and SQLite - so a quoted name still
+denotes exactly what the unquoted one denoted.
+
+### Booleans on Oracle
+
+Oracle has no `BOOLEAN` column type before 23ai. Declare a `Boolean` member's
+column as **`NUMBER(1)`**: the driver maps that width to a boolean, so the same
+schema works from 12c to 23ai. The rule is keyed on precision, not on the member
+name, so **every** `NUMBER(1)` on an Oracle connection is read as a boolean - a
+status code or a counter stored in that width must be widened to `NUMBER(2)`.
+
 ## 3a. Database schema & column types
 
 Trysil maps to **existing** tables - it does not create, migrate, or alter the schema. You create the tables; each `[TColumn('Name')]` must match a real column by name, and the column type must be compatible with the field type. A mismatch surfaces at **runtime**, not at compile time. Mapping by Delphi field type:
@@ -630,6 +647,9 @@ All Trysil exceptions derive from `ETException` (`Trysil.Exceptions`):
 - The version check is automatic when the entity has a `[TVersionColumn]` and `TTUpdateMode` is `KeyAndVersionColumn` (the default). Catch `ETConcurrentUpdateException` to handle "modified by another user". Use `KeyOnly` for tables without a version column.
 - `ETValidationException` exposes the failures only through its `.Message` text - the per-field list is not individually iterable. Read `E.Message` for the formatted reasons.
 - `Get<T>(id)` returns `nil` when the row does not exist; it does **not** raise. Use `TryGet<T>(id, entity): Boolean` for the explicit form.
+- **`Refresh<T>` raises when the row is gone.** It used to leave the entity untouched and say nothing, so the caller went on working on a record that no longer exists believing it had just re-read it. Use `TryRefresh<T>(AEntity): Boolean` when a missing row is an expected outcome.
+- **`OldEntity<T>` returns `nil` when there is no old row**, and it must be **first read in a `Before*` event**: it is memoized on first access, and a first read in `DoAfter` would hand back the row the command has just written. Reading it in `DoBefore` and using it in `DoAfter` is fine.
+- **`Insert<T>` refuses an entity whose primary key is zero.** Nothing assigns a key on the way in except `CreateEntity<T>`, which takes one from the sequence. An entity built by a deserializer has no key: call `SetSequenceID<T>` before inserting it.
 
 ## 12. Validation, custom validators & lifecycle events
 
@@ -777,7 +797,9 @@ constructor Create(const AMaxLevels: Integer; const ADetails: Boolean);
 - `AMaxLevels` - max nesting depth for related entities; `-1` = unlimited, `0` = none (relations emitted as IDs only).
 - `ADetails` - include detail (1:N) collections. It is a switch, not a depth: `AMaxLevels` bounds detail collections as well, so `Create(0, True)` emits no details at all and `Create(1, True)` emits one level of them.
 
-`AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on. Use `0` on list endpoints to avoid `rows x N:1 relations` round trips.
+`AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on.
+
+**On a list the only safe value is `0`.** At `0` a `TTLazy<T>` is written as its foreign key id **without a query**, so the client already has the identifier for free; at `1` the gate opens and every reference is resolved, which is **one query per relation per row**. A list of 50 rows with 4 relations costs 2 queries at `Create(0, False)` and 202 at `Create(1, False)`. Depth belongs to the endpoint that returns **one** entity.
 
 ```delphi
 LConfig := TTJSonSerializerConfig.Create(-1, False);  // defaults: unlimited depth, no details
@@ -889,6 +911,22 @@ end;
 
 LMeta := FJSonContext.MetadataToJSon<TCustomer>();
 ```
+
+`MetadataToJSon<T>` emits `entity`, `primaryKey`, `versionColumn` and a
+`properties` array:
+
+```json
+{
+  "entity": "Customer",
+  "primaryKey": "id",
+  "versionColumn": "versionID",
+  "properties": [ { "name": "name", "type": "ftString", "size": 100 } ]
+}
+```
+
+- `entity` carries the **class name** without the leading `T` (`TAPIOrder` becomes `APIOrder`). It replaces `tableName`, which named the physical table: of no use to a client addressing `/api/orders`, and the first thing worth having to anyone probing an API for the database underneath.
+- `properties` replaces `columns`, because each entry describes a mapped **member**: a `[TColumn('CustomerID')]` on a `TTLazy<T>` appears as `customerID`, and the column behind it appears nowhere.
+- **Keep the metadata route behind the same authorization as the data route it describes.** It names what the client already sees in ordinary payloads, so it is not a leak on its own - but it is a map, and a map handed to someone who cannot read the rows is.
 
 ## Excluding fields
 
@@ -1290,11 +1328,14 @@ The listener catches every exception centrally and turns it into the JSON respon
   | `ETHttpNotFound` | 404 |
   | `ETHttpMethodNotAllowed` | 405 |
   | `ETHttpConflict` | 409 |
+  | `ETHttpContentTooLarge` | 413 |
   | `ETHttpUnprocessableContent` | 422 |
   | `ETHttpInternalServerError` | 500 |
   | `ETHttpException.Create(code, msg)` | any code you pass |
 
-- **Every other exception becomes HTTP 500**, and the body of any response of status 500 or above is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The listener routes by status code, not by class, so `raise ETHttpInternalServerError.Create(E.Message)` does not put that message on the wire either. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two - which means an application with no registered log writer has a 5xx with no detail anywhere. Two ORM exceptions are mapped for you, from 2.0.0: an `ETConcurrentUpdateException` that escapes a controller becomes **409** and an `ETValidationException` becomes **422**, both carrying the original message in the usual `status` / `message` body, both logged with `LogAction`. `ETDataIntegrityException` is **not** mapped and still becomes a 500. Catch them in the controller only when you want a different status:
+- **Every other exception becomes HTTP 500**, and the body of any response of status 500 or above is a **constant plus the task id** - `{"status":500,"message":"Internal server error.","taskId":"..."}`. The listener routes by status code, not by class, so `raise ETHttpInternalServerError.Create(E.Message)` does not put that message on the wire either. The exception message never reaches the client on this path, and there is no serialized exception chain: the detail goes to the log writer's `WriteError`, and the `taskId` is what correlates the two - which means an application with no registered log writer has a 5xx with no detail anywhere. Two ORM exceptions are mapped for you, from 2.0.0: an `ETConcurrentUpdateException` that escapes a controller becomes **409** and an `ETValidationException` becomes **422**, both carrying the original message in the usual `status` / `message` body, both logged with `LogAction`. An `ETJSonException` becomes **400**. `ETDataIntegrityException` is **not** mapped and still becomes a 500, because whether a broken constraint is the caller's fault or the schema's is not something the library can decide.
+
+**401 and 403 mean different things, and a client has to tell them apart.** `401` is "you sent no credential, or one of another scheme", and it carries `WWW-Authenticate`. A credential that was understood and refused - a token that does not verify, a password that does not match, a user your `IsValid` rejects - is **403**. So a client that renews its token on a `401` never renews: renew on **403**, or check expiry before calling. Catch them in the controller only when you want a different status:
 
 ```delphi
 procedure TAPIReadWriteController<T>.Update;
@@ -1319,6 +1360,33 @@ end;
 ```
 
 - On success the status is always **200 OK** (the `201 Created` constant exists but is unused). Set `FResponse.StatusCode` yourself for a different success code.
+
+## 11. Things the server refuses by default
+
+- **A request body is capped at 1 MB.** `TTHttpServer<C>.MaxRequestContentLength` (default `1048576`, `0` for unbounded) is answered `413` from `OnHeadersAvailable`, before a byte of the body is read. Raise it if you accept uploads or large batches.
+- **A `POST` that declares another method through a header is refused with `400`.** Indy honours `X-HTTP-Method-Override` and friends before Trysil sees the request, which walks past every proxy rule filtering on the request line. `TTHttpServer<C>.AllowMethodOverride` (default `False`) is where an application that needs it says so.
+- **`Save<T>` and `SaveAll<T>` raise on a `TTHttpContext`.** `Save` decides between insert and update from what the context created and has not written yet, and a context built and destroyed inside one request has no such history. Whether a request creates or updates is in the request: use `Insert<T>` and `Update<T>`.
+- **`Insert<T>` refuses a primary key of zero**, which is what a deserialized body has when it carries no id. Call `Context.SetSequenceID<T>(LEntity)` before inserting.
+- **A preflight is answered before authentication**, identically for every path, with `Access-Control-Max-Age`. Do not expect `OPTIONS` to reach a controller: a method declared with `[TOptions]` is never called.
+
+## Storing passwords
+
+Hashing is the application's - Trysil does not know where your users live. Three
+rules: hash with a **slow, salted** function (Argon2id, bcrypt), compare in
+**constant time**, and answer the same way and in the same time whether the user
+does not exist or the password is wrong.
+
+**The scheme decides what you can store.** Digest needs
+`HA1 = MD5(username:realm:password)`, so the database has to hold the plaintext
+password or an **unsalted MD5** - there is no way to derive `HA1` from a bcrypt,
+and RFC 7616 keeps the requirement word for word. **Bearer with JWT** is the
+only scheme that leaves you free: the password appears once, at your login
+endpoint, and no request after that carries one. Basic over TLS is reasonable
+when the caller is a machine and the secret is long and random.
+
+Trysil does the part that is its: `Authorization`, `Proxy-Authorization`,
+`Cookie`, `Set-Cookie` and `X-Api-Key` are written to the request log as
+`<redacted>` - with Basic that header **is** the password in base64.
 
 ## Lifecycle reminders
 - One `TAPIContext` (connection + `TTHttpContext`) is created and destroyed **per request** - keep `Create` cheap (assignments/object creation only; heavier work in `AfterConstruction`).

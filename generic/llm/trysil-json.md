@@ -41,7 +41,9 @@ constructor Create(const AMaxLevels: Integer; const ADetails: Boolean);
 - `AMaxLevels` - max nesting depth for related entities; `-1` = unlimited, `0` = none (relations emitted as IDs only).
 - `ADetails` - include detail (1:N) collections. It is a switch, not a depth: `AMaxLevels` bounds detail collections as well, so `Create(0, True)` emits no details at all and `Create(1, True)` emits one level of them.
 
-`AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on. Use `0` on list endpoints to avoid `rows x N:1 relations` round trips.
+`AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on.
+
+**On a list the only safe value is `0`.** At `0` a `TTLazy<T>` is written as its foreign key id **without a query**, so the client already has the identifier for free; at `1` the gate opens and every reference is resolved, which is **one query per relation per row**. A list of 50 rows with 4 relations costs 2 queries at `Create(0, False)` and 202 at `Create(1, False)`. Depth belongs to the endpoint that returns **one** entity.
 
 ```delphi
 LConfig := TTJSonSerializerConfig.Create(-1, False);  // defaults: unlimited depth, no details
@@ -153,6 +155,22 @@ end;
 
 LMeta := FJSonContext.MetadataToJSon<TCustomer>();
 ```
+
+`MetadataToJSon<T>` emits `entity`, `primaryKey`, `versionColumn` and a
+`properties` array:
+
+```json
+{
+  "entity": "Customer",
+  "primaryKey": "id",
+  "versionColumn": "versionID",
+  "properties": [ { "name": "name", "type": "ftString", "size": 100 } ]
+}
+```
+
+- `entity` carries the **class name** without the leading `T` (`TAPIOrder` becomes `APIOrder`). It replaces `tableName`, which named the physical table: of no use to a client addressing `/api/orders`, and the first thing worth having to anyone probing an API for the database underneath.
+- `properties` replaces `columns`, because each entry describes a mapped **member**: a `[TColumn('CustomerID')]` on a `TTLazy<T>` appears as `customerID`, and the column behind it appears nowhere.
+- **Keep the metadata route behind the same authorization as the data route it describes.** It names what the client already sees in ordinary payloads, so it is not a leak on its own - but it is a map, and a map handed to someone who cannot read the rows is.
 
 ## Excluding fields
 

@@ -255,6 +255,23 @@ Add `{$WARN UNKNOWN_CUSTOM_ATTRIBUTE ERROR}` to units that use Trysil attributes
 ### Mapping is cached
 `TTMapper.Instance` is a global singleton converting classes to `TTTableMap` on first access.
 
+### Names with a schema
+
+`[TTable('dbo.Invoices')]` works: the name is split on the dot and each part is
+quoted on its own, so it reaches the database as `[dbo].[Invoices]` and not as
+one object with a dot in its name. Identifiers are quoted **after** being folded
+to the engine's default case - upper on Oracle, Firebird and InterBase, lower on
+PostgreSQL, unchanged on SQL Server, MariaDB and SQLite - so a quoted name still
+denotes exactly what the unquoted one denoted.
+
+### Booleans on Oracle
+
+Oracle has no `BOOLEAN` column type before 23ai. Declare a `Boolean` member's
+column as **`NUMBER(1)`**: the driver maps that width to a boolean, so the same
+schema works from 12c to 23ai. The rule is keyed on precision, not on the member
+name, so **every** `NUMBER(1)` on an Oracle connection is read as a boolean - a
+status code or a counter stored in that width must be widened to `NUMBER(2)`.
+
 ## 3a. Database schema & column types
 
 Trysil maps to **existing** tables - it does not create, migrate, or alter the schema. You create the tables; each `[TColumn('Name')]` must match a real column by name, and the column type must be compatible with the field type. A mismatch surfaces at **runtime**, not at compile time. Mapping by Delphi field type:
@@ -624,6 +641,9 @@ All Trysil exceptions derive from `ETException` (`Trysil.Exceptions`):
 - The version check is automatic when the entity has a `[TVersionColumn]` and `TTUpdateMode` is `KeyAndVersionColumn` (the default). Catch `ETConcurrentUpdateException` to handle "modified by another user". Use `KeyOnly` for tables without a version column.
 - `ETValidationException` exposes the failures only through its `.Message` text - the per-field list is not individually iterable. Read `E.Message` for the formatted reasons.
 - `Get<T>(id)` returns `nil` when the row does not exist; it does **not** raise. Use `TryGet<T>(id, entity): Boolean` for the explicit form.
+- **`Refresh<T>` raises when the row is gone.** It used to leave the entity untouched and say nothing, so the caller went on working on a record that no longer exists believing it had just re-read it. Use `TryRefresh<T>(AEntity): Boolean` when a missing row is an expected outcome.
+- **`OldEntity<T>` returns `nil` when there is no old row**, and it must be **first read in a `Before*` event**: it is memoized on first access, and a first read in `DoAfter` would hand back the row the command has just written. Reading it in `DoBefore` and using it in `DoAfter` is fine.
+- **`Insert<T>` refuses an entity whose primary key is zero.** Nothing assigns a key on the way in except `CreateEntity<T>`, which takes one from the sequence. An entity built by a deserializer has no key: call `SetSequenceID<T>` before inserting it.
 
 ## 12. Validation, custom validators & lifecycle events
 
