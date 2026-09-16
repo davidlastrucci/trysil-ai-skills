@@ -74,7 +74,7 @@ The `*Object`/`*Array` variants hand you a `TJSonObject`/`TJSonArray` you own an
 LJSon := TJSonObject.Create;
 try
   LJSon.AddPair('count', TJSonNumber.Create(Context.SelectCount<T>(AFilter)));
-  LList := TTObjectList<T>.Create(True);
+  LList := Context.CreateEntityList<T>();
   try
     Context.Select<T>(LList, AFilter);
     LJSonData := Context.ListToJSonArray<T>(LList, LConfigSelect);
@@ -104,7 +104,7 @@ procedure ListFromJSon<T: class>(const AJSon: String; const AList: TList<T>);
 procedure ListFromJSonArray<T: class>(const AJSon: TJSonArray; const AList: TList<T>);
 ```
 
-`EntityFromJSon*` returns a **new entity that you own** - free it (or add it to an owning list). `ListFromJSon*` fills a caller-owned list (use `TTObjectList<T>.Create(True)` so the list frees its items).
+`EntityFromJSon*` returns a **new entity that you own** - free it with `FreeEntity<T>`, never with `Free`. `ListFromJSon*` fills a caller-owned list: build it with `CreateEntityList<T>`, which frees its items and tells the context about each one.
 
 The two-argument overloads fill an entity you already loaded instead of building a fresh one. **Use them for an update endpoint**: `Update<T>` writes the whole row, so with a fresh entity every column absent from the request body is written back blank. Filling a loaded entity keeps what the body does not mention.
 
@@ -114,7 +114,7 @@ try
   FJSonContext.EntityFromJSonObject<TCustomer>(FRequest.JSonContent, LEntity);
   FJSonContext.Update<TCustomer>(LEntity);
 finally
-  LEntity.Free;
+  FJSonContext.FreeEntity<TCustomer>(LEntity);
 end;
 ```
 
@@ -127,10 +127,10 @@ LRestored := FJSonContext.EntityFromJSon<TCustomer>(LJson);
 try
   // use LRestored
 finally
-  LRestored.Free;
+  FJSonContext.FreeEntity<TCustomer>(LRestored);
 end;
 
-LRestoredList := TTObjectList<TCustomer>.Create(True);
+LRestoredList := FJSonContext.CreateEntityList<TCustomer>();
 try
   FJSonContext.ListFromJSon<TCustomer>(LJson, LRestoredList);
 finally
@@ -185,10 +185,13 @@ FInternalCode: String;
 From 2.0.0 `MetadataToJSon<T>` skips them too: the metadata describe what the
 entity serializes, not what it maps.
 
-**Pair it with `[TNotFilterable]`.** A column kept out of every response but
+**A hidden column is not filterable.** A column kept out of every response but
 still reachable from the server-side filter is the classic hole: `LIKE` plus
 the row count in the response recovers a value one character at a time without
-it ever being serialized. `[TJSonIgnore]` alone does not close it.
+it ever being serialized. From 2.0.0 the filter refuses a column no response
+returns - `[TJSonIgnore]` or `[TJSonIgnoreSerialize]` - with a `400`, and
+`MetadataToJSon<T>` reports it `filterable: false`. `[TNotFilterable]` is still
+the way to close a column that responses do return.
 
 ## Reminders
 - Free the context before the connection.

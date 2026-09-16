@@ -128,7 +128,7 @@ begin
     Context.Insert<T>(LEntity);
     FResponse.Content := Context.EntityToJSon<T>(LEntity, ConfigGet);
   finally
-    LEntity.Free;
+    Context.FreeEntity<T>(LEntity);
   end;
 end;
 
@@ -405,7 +405,7 @@ begin
         raise ETHttpConflict.Create(E.Message);                // 409 Conflict
     end;
   finally
-    LEntity.Free;
+    Context.FreeEntity<T>(LEntity);
   end;
 end;
 ```

@@ -62,7 +62,7 @@ begin
       LCustomer.CompanyName := 'Acme';
       LContext.Insert<TCustomer>(LCustomer);
 
-      LList := TTList<TCustomer>.Create;
+      LList := LContext.CreateEntityList<TCustomer>();
       try
         LContext.SelectAll<TCustomer>(LList);            // fills the list
       finally
@@ -146,11 +146,14 @@ Trysil has **two memory models**, picked by the identity-map flag on the context
 Getting this wrong gives double-frees or leaks; it is the single most common
 mistake. Decide the model up front and keep one unit of work on one model.
 
-**Identity map OFF** (the default: `Create(AConnection)` or
-`Create(AConnection, False)`) - **the caller owns** every entity it receives:
+**Identity map OFF** (`Create(AConnection, False)`) - **the caller owns** every
+entity it receives:
 
-- Entities from `Get` / `TryGet` / `Select` / `SelectAll` / `RawSelect` /
-  `CreateEntity` are yours to free.
+- An entity from `Get` / `TryGet` / `CreateEntity` is yours to free, with
+  `FreeEntity<T>`. The rows of `Select` / `SelectAll` go with the list from
+  `CreateEntityList<T>`, and those of `RawSelect` with the list you collected
+  them in - a `TTList<T>` with `FreeClone<T>` on each row when the class has a
+  lazy member (rows 3 and 4 of the table below).
 - A `TTLazy<T>` N:1 reference **clones the entity you assign to it**.
   `LOrder.Customer := LCustomer` stores a copy: `LOrder` owns that copy and frees
   it when `LOrder` is freed (and also when you reassign the reference or change
@@ -161,27 +164,100 @@ mistake. Decide the model up front and keep one unit of work on one model.
     own clone.
   - Reading the reference back returns the clone, not your instance: changes made
     to your object after the assignment do not reach the stored reference.
+  - A value read through a lazy reference goes with the entity it replaces:
+    after `LNext := E.Manager.Entity.Manager.Entity; E.Manager.Entity := LNext`
+    `LNext` is freed with the old manager. Read `E.Manager.Entity` again.
+- A `TTSession<T>` adopts the entity you pass to `Insert`, or to `Save` when it
+  is not one of its clones, and a list from `CreateEntityList<T>` owns what you
+  add to it: do not free those yourself, and do not read them or hand them on
+  after the session or the list is gone. Hand over only an entity that is yours
+  (rows 1, 5, 6 of the table below), never a row of another list. An entity
+  `Insert` refused keeps its owner. In 1.0.0 the session did not free what
+  `Insert` took: drop a free written for 1.0.0.
 - A `TTLazyList<T>` (1:N detail) owns the child entities it loads and frees them
   with the owner.
 
-**Identity map ON** (`Create(AConnection, True)`) - **the context owns
-everything**. The map is a `TObjectDictionary` with `doOwnsValues`, so every
-entity from `Get` / `Select` / `CreateEntity` lives and dies with the context:
+**Identity map ON** (the default: `Create(AConnection)` or
+`Create(AConnection, True)`) - **the context owns everything**. The map is a `TObjectDictionary` with `doOwnsValues`, so every
+entity from `Get` / `Select` / `CreateEntity` of a type with a primary key and
+no `[TJoin]` lives and dies with the context (any other type is yours as with
+the map off):
 
-- Do **not** free any entity yourself - freeing the context frees them all
-  (a manual `Free` is a double free).
-- Pass **non-owning** result lists (`TTObjectList<T>.Create(False)`), otherwise
-  the list and the map both free the same objects.
+- Do **not** `Free` any entity yourself - freeing the context frees them all
+  (a manual `Free` is a double free). `FreeEntity<T>` is still right: it leaves
+  alone what the map owns.
+- Build result lists with `CreateEntityList<T>`, which does not own what the map
+  holds; an owning list and the map would both free the same objects.
 - `TTLazy<T>` / `TTLazyList<T>` do **not** free their entities in this mode (the
-  map owns them).
+  map owns them) for a type with a primary key and no `[TJoin]`; any other type
+  they free as with the map off. The same criterion holds for sessions and for
+  lists from `CreateEntityList<T>`.
+- A clone from `CloneEntity` or `Context.OldEntity<T>`, a `RawSelect` row kept
+  in a `TTList<T>` that owns nothing, or an object you built yourself is not in
+  the map, and `FreeEntity<T>` does not free it for a type with a primary key
+  and no `[TJoin]`: free it with `Context.FreeClone<T>`, which frees in both
+  modes. The same for such an entity passed to `TTSession<T>.Insert` or added
+  to a list from `CreateEntityList<T>`: they do not free it with the map on, so
+  `FreeClone<T>` it after the session or the list.
+- Never `FreeClone<T>` what the map owns - an entity from `Get` / `Select` /
+  `CreateEntity`, a lazy `.Entity`, a `TTLazyList` row: the map keeps the
+  address, and the next read of the same key writes into freed memory.
+- Assign to a `TTLazy<T>` reference only an entity the context read or created:
+  with the map on it keeps the instance you pass as it is, so a clone is freed
+  by nobody, and a clone the session holds in `Entities` or the `OldEntity` of
+  an event leaves it on freed memory once they are destroyed.
 
-**Two helpers that work in both modes** (prefer them so the same code is correct
-either way):
+**Who frees what, in every case** - the same table as `docs/guide/context.md`:
+
+| What you hold | Map off | Map on, a type with a primary key and no `[TJoin]` | Map on, any other type |
+|---|---|---|---|
+| 1. An entity from `Get`, `TryGet`, `CreateEntity` or `EntityFromJSon` | `FreeEntity<T>` | `FreeEntity<T>`, which leaves it to the map | `FreeEntity<T>` |
+| 2. The rows `Select`, `SelectAll` or `ListFromJSon` put in a list from `CreateEntityList<T>` | free the list | free the list, which leaves them to the map | free the list |
+| 3. The rows of a `RawSelect<T>` into a plain DTO | free the `TTObjectList<T>.Create(True)` they are in | the same | the same |
+| 4. The rows of a `RawSelect<T>` into a class with a lazy member or a `[TDetailColumn]` | keep them in a `TTList<T>`, `FreeClone<T>` each, then free the list | the same | the same |
+| 5. A clone from `CloneEntity`, or from `OldEntity` you called yourself | `FreeClone<T>` | `FreeClone<T>` | `FreeClone<T>` |
+| 6. An object you built yourself | `FreeClone<T>` | `FreeClone<T>` | `FreeClone<T>` |
+| 7. An entity of rows 1, 5 or 6 handed to `TTSession<T>.Insert`, or to `Save` when it is not one of the session's clones, once the call returned; or added to a list from `CreateEntityList<T>` | the session or the list frees it: do not free it, and do not read it or hand it on after the session or the list is gone | from row 1 the map keeps it; from rows 5 or 6, `FreeClone<T>` after the session or the list | as in the first column |
+| 8. An entity that still belongs to someone else: a row of a list, the `.Entity` of a lazy member, a clone or an entity of a session, the `OldEntity` of an event | do not hand it to a session or to a list | the same | the same |
+| 9. An entity `Insert` refused, because it does not validate or is already in the session | its owner does not change; a second `Insert`, or `Save` again, of an entity already inserted still leaves it twice in `Entities`, so avoid it rather than catch it | the same | the same |
+| 10. A clone the session holds in `Entities` | the session frees it | the same | the same |
+| 11. The `OldEntity` property of an event | the event frees it | the same | the same |
+| 12. The `.Entity` of a lazy member, the list a `TTLazyList<T>` exposes and its rows, what `GetOriginalEntity` returns | never free it | never free it | never free it |
+| 13. A list handed to `CreateSession<T>` | a list of yours: free it after the session, never before; the list of a lazy member: never free it, and keep the entity that carries it alive until after the session, whoever owns that entity | the same | the same |
+
+**The rule, in both modes: free every entity with `FreeEntity<T>` and build every
+list of entities with `CreateEntityList<T>`.** Never a bare `LEntity.Free`, never
+an owning `TTObjectList<T>.Create(True)` of your own. A rollback puts back what
+Trysil wrote to the entities, so it holds them until the transaction ends: a
+bare `Free` of an entity written inside that transaction makes the rollback
+write into freed memory, with no exception. It does not take a transaction of
+your own - an event that writes another entity runs inside the one Trysil
+opened for the write that fired it. The exceptions are in the table: a clone
+and an object you built yourself go through `FreeClone<T>`, and the one list
+that stays yours is the result of a `RawSelect<T>`, owning for a plain DTO and
+not owning for a class with a lazy member. Do not keep a pointer to a row of a
+list or to a lazy `.Entity` past the next operation on its owner: read it
+again. `GetOriginalEntity` answers with a row of the source list: reload that
+list only after the session is freed. A list handed to `CreateSession<T>`
+outlives the session: free a list of yours after the session; the list of a
+lazy member is never freed by you, and the entity carrying it lives until after
+the session. Reorder a list that owns its rows with
+`Exchange` or `Move`, never by assigning one item over another, and before
+filling a `TTList<T>` of raw select rows again `FreeClone<T>` each row.
 
 - `Context.CreateEntityList<T>: TTList<T>` returns a list whose `OwnsObjects` is
-  already set correctly for the current mode (`True` when off, `False` when on).
-- `Context.FreeEntity<T>(AEntity)` frees the entity only when the identity map is
-  off; it is a safe no-op when on.
+  already set correctly for the current mode, and that tells the context about
+  every entity it frees.
+- `Context.FreeEntity<T>(AEntity)` forgets the entity in the context and frees
+  it, unless the identity map holds entities of its type (a primary key and no
+  `[TJoin]`).
+- `Context.FreeClone<T>(AEntity)` does the same and frees in both modes: for
+  clones, raw select rows and your own objects that no container holds.
+
+**An entity belongs to the context that built it**: write and free it through
+that context, never through another one on the same connection. Nothing checks
+it, and a rollback can write into freed memory. Always build entities with
+`CreateEntity<T>`.
 
 ```delphi
 // Mode-agnostic read + cleanup:
@@ -195,8 +271,10 @@ end;
 ```
 
 Rule of thumb for a script/console unit of work: with the identity map **on**
-nothing you hold needs manual freeing; with it **off** you free what you created
-or received, and each lazy reference independently owns its own clone.
+nothing the context read or created needs manual freeing, and a clone goes
+through `FreeClone<T>`; with it **off** you free what you created or received,
+through `FreeEntity<T>`, and each lazy reference independently owns its own
+clone.
 
 To set a foreign key without any object at all, model the FK as a plain `Integer`
 `[TColumn]` field (e.g. `OrderDetail.OrderID`) and assign the id directly - no
@@ -310,7 +388,7 @@ Trysil maps to **existing** tables - it does not create, migrate, or alter the s
 uses Trysil.Context, Trysil.Generics.Collections;
 
 // Read all
-LList := TTList<TCustomer>.Create;
+LList := FContext.CreateEntityList<TCustomer>();
 try
   FContext.SelectAll<TCustomer>(LList);
 finally
@@ -360,7 +438,7 @@ finally
   LBuilder.Free;
 end;
 
-LList := TTList<TCustomer>.Create;
+LList := FContext.CreateEntityList<TCustomer>();
 try
   FContext.Select<TCustomer>(LList, LFilter);
 finally
@@ -574,7 +652,7 @@ See section 2a.
 
 ## 7. TTSession<T> - Unit of Work (`Trysil.Session`)
 
-Clones entities on creation; compares clones to originals on `ApplyChanges`. Full cloning is the only correct implementation in Delphi (no dynamic proxies). The session has explicit state per entity (Original/Inserted/Updated/Deleted); cloning gives isolation, not field-level diffing.
+Clones entities on creation; `ApplyChanges` writes only what was marked with `Insert`, `Update` or `Delete` - a modified clone not passed to `Update` is not written. Full cloning is the only correct implementation in Delphi (no dynamic proxies). The session has explicit state per entity (Original/Inserted/Updated/Deleted); cloning gives isolation, not field-level diffing.
 
 ```delphi
 LSession := FContext.CreateSession<TCustomer>(LList);
@@ -634,7 +712,7 @@ Context.RawSelect<TOrderSummary>(
   LResult);
 ```
 
-Read-only, no identity map, no lazy loading.
+Not written - nothing stops `Insert`/`Update`/`Delete`/`Undelete` on a row whose class has a key and a version column, or only a key under `KeyOnly` (`Undelete` also needs `[TDeletedAt]`), so do not - and no identity map. Lazy members are mapped as on any read: a row that carries one goes in a `TTList<T>` that owns nothing and is freed with `FreeClone<T>`.
 
 ## 11. Exceptions & optimistic locking
 
@@ -651,7 +729,7 @@ All Trysil exceptions derive from `ETException` (`Trysil.Exceptions`):
 - `ETValidationException` exposes the failures only through its `.Message` text - the per-field list is not individually iterable. Read `E.Message` for the formatted reasons.
 - `Get<T>(id)` returns `nil` when the row does not exist; it does **not** raise. Use `TryGet<T>(id, entity): Boolean` for the explicit form.
 - **`Refresh<T>` raises when the row is gone.** It used to leave the entity untouched and say nothing, so the caller went on working on a record that no longer exists believing it had just re-read it. Use `TryRefresh<T>(AEntity): Boolean` when a missing row is an expected outcome.
-- **`OldEntity<T>` returns `nil` when there is no old row**, and it must be **first read in a `Before*` event**: it is memoized on first access, and a first read in `DoAfter` would hand back the row the command has just written. Reading it in `DoBefore` and using it in `DoAfter` is fine.
+- **`OldEntity<T>` returns `nil` when there is no old row**, and it must be **first read in a `Before*` event**: it is memoized on first access, and a first read in `DoAfter` would hand back the row the command has just written. Reading it in `DoBefore` and using it in `DoAfter` is fine. The event property's clone belongs to the event, which frees it: do not free it or hand it to a lazy reference. A clone you get by calling `Context.OldEntity<T>` yourself is yours, freed with `FreeClone<T>`.
 - **`Insert<T>` refuses an entity whose primary key is zero.** Nothing assigns a key on the way in except `CreateEntity<T>`, which takes one from the sequence. An entity built by a deserializer has no key: call `SetSequenceID<T>` before inserting it.
 
 ## 12. Validation, custom validators & lifecycle events
@@ -661,6 +739,16 @@ All Trysil exceptions derive from `ETException` (`Trysil.Exceptions`):
 `[TRequired]`, `[TMaxLength(n)]`, `[TMinLength(n)]`, `[TMinValue(n)]`, `[TMaxValue(n)]`, `[TLess(n)]`, `[TGreater(n)]`, `[TRange(min, max)]`, `[TRegex('pattern')]`, `[TEMail]`.
 
 **Value type must match the field type** (`TMinValue` / `TMaxValue` / `TLess` / `TGreater` / `TRange`): the literal you pass picks the comparison type, and it has to match the field's type, or validation fails at runtime with `<Column> type not valid for validation`. For a `Double` or `Currency` field write a float literal - `[TGreater(0.0)]`, not `[TGreater(0)]` - and for an `Integer` field write an integer literal - `[TGreater(0)]`. So `Price: Currency` needs `[TGreater(0.0)]` / `[TMinValue(0.01)]`, while `Quantity: Integer` needs `[TGreater(0)]`. The attribute takes a `Double` argument in both cases; there is no `Currency` overload, and none is needed.
+
+**`[TRequired]` on a `TTLazy<T>` member asks the database.** With the foreign
+key set it reads the relation and fails when the row does not load, with a
+message of its own; with the key at zero it fails as any empty field does. The
+`SELECT` is the one the lazy member would have made anyway, and it goes through
+the **read** connection - so a master inserted in the same uncommitted unit of
+work, on a context built with two connections, is not visible to it. A
+**soft-deleted master loads and is accepted**, because a lazy member reads with
+`Get<T>(ID, True)` on purpose: if your domain wants that refused, write it in a
+`[TValidator]`.
 
 **`[TEMail]`** validates a basic email format with a built-in regex. An empty
 string passes (the check is skipped when the value is empty, so add `[TRequired]`
