@@ -738,7 +738,7 @@ All Trysil exceptions derive from `ETException` (`Trysil.Exceptions`):
 
 `[TRequired]`, `[TMaxLength(n)]`, `[TMinLength(n)]`, `[TMinValue(n)]`, `[TMaxValue(n)]`, `[TLess(n)]`, `[TGreater(n)]`, `[TRange(min, max)]`, `[TRegex('pattern')]`, `[TEMail]`.
 
-**Value type must match the field type** (`TMinValue` / `TMaxValue` / `TLess` / `TGreater` / `TRange`): the literal you pass picks the comparison type, and it has to match the field's type, or validation fails at runtime with `<Column> type not valid for validation`. For a `Double` or `Currency` field write a float literal - `[TGreater(0.0)]`, not `[TGreater(0)]` - and for an `Integer` field write an integer literal - `[TGreater(0)]`. So `Price: Currency` needs `[TGreater(0.0)]` / `[TMinValue(0.01)]`, while `Quantity: Integer` needs `[TGreater(0)]`. The attribute takes a `Double` argument in both cases; there is no `Currency` overload, and none is needed.
+**The comparison reads the value, not the literal** (`TMinValue` / `TMaxValue` / `TLess` / `TGreater` / `TRange`): `[TGreater(0)]` on a `Currency` or `Double` field works, and `[TGreater(0.0)]` on an `Integer` field works too - when either side is not a whole number, both go through the float comparison. The attribute takes a `Double` argument in every case; there is no `Currency` overload, and none is needed. `<Column> type not valid for validation` is raised when the member holds something that is not a number at all.
 
 **`[TRequired]` on a `TTLazy<T>` member asks the database.** With the foreign
 key set it reads the relation and fails when the row does not load, with a
