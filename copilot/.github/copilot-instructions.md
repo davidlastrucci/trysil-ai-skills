@@ -448,6 +448,8 @@ end;
 
 Conditions: `Equal`, `NotEqual`, `Greater`, `GreaterOrEqual`, `Less`, `LessOrEqual`, `Like`, `NotLike`, `IsNull`, `IsNotNull`. Combine with `Where`/`AndWhere`/`OrWhere`. Paging/order: `OrderByAsc`/`OrderByDesc`, `Limit`, `Offset`. Use `TTFilter.Empty` for "no filter" and `SelectCount<T>(AFilter)` for counts.
 
+To narrow a `TTFilter` built elsewhere (by the builder, or from an HTTP body), `AFilter.AddWhere('OwnerID = :OwnerID')` joins the condition to the existing WHERE with `AND`, each side in parentheses, so an `OR` already there cannot swallow it; then `AFilter.AddParameter('OwnerID', ftInteger, LOwnerID)`. Do not name added parameters `p0`, `p1`, ...: the builder and the HTTP filter use those.
+
 Paging takes a page size, and the offset is optional: `Limit(20)` on its own pages from the first row, so the `Offset(0)` is not needed. An **offset without a limit raises** `ETException`, because "skip 500 and return everything after it" has no portable SQL across the seven dialects - if you want that, pass a limit large enough to cover the tail.
 
 The value-taking conditions (`Equal`, `Greater`, `Like`, …) each take a single `const AValue: TTValue` parameter - there are **no** per-type overloads. `TTValue` accepts any scalar (`String`, `Integer`, `Double`, `Currency`, `Boolean`, `TDateTime`, …) by implicit conversion, so pass the value directly whatever its type: `.Where('Description').Equal('Widget')`, `.AndWhere('Price').Greater(5.0)`, `.AndWhere('BrandID').Equal(LBrand.ID)`.
@@ -1071,6 +1073,7 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 | `TTHttpJWTRS256Payload` | `Trysil.Http.JWT.Payload.RS256` |
 | `TTHttpJWTRSAPrivateKey`, `TTHttpJWTRSAPublicKey` | `Trysil.Http.JWT.RSAKey` |
 | `TTHttpFilter<T>` | `Trysil.Http.Filter` |
+| `TTHttpEntityReader<T>`, `TTHttpEntityWriter<T>`, `TTHttpEntityEvent<T>` | `Trysil.Http.Entity` |
 | `TTMultiTenant<T>`, `TTTenantConfig` | `Trysil.Http.MultiTenant` |
 | `TTHttpLogAbstractWriter` | `Trysil.Http.Log.Writer` |
 | `ETHttpException` + `ETHttp*` subclasses | `Trysil.Http.Exceptions` |
@@ -1165,30 +1168,34 @@ public
 end;
 ```
 
-Implementations use the injected context and write `FResponse.Content`:
+The implementations delegate to `TTHttpEntityReader<T>` / `TTHttpEntityWriter<T>` (`Trysil.Http.Entity`), which carry the CRUD logic but are **not** controllers: they borrow the `TTHttpContext` passed to their constructor (never free it), take the body as a `TJSonValue` and return JSON as a string. Create them in the controller's constructor, free them in its destructor; a read-only controller creates only the reader.
 
 ```delphi
-procedure TAPIReadWriteController<T>.Insert;
-var
-  LEntity: T;
+constructor TAPIReadWriteController<T>.Create(
+  const AContext: TAPIContext;
+  const ARequest: TTHttpRequest;
+  const AResponse: TTHttpResponse);
 begin
-  LEntity := Context.EntityFromJSonObject<T>(FRequest.JSonContent);
-  try
-    if Context.GetID<T>(LEntity) <= 0 then
-      Context.SetSequenceID<T>(LEntity);
-    Context.Insert<T>(LEntity);
-    FResponse.Content := Context.EntityToJSon<T>(LEntity, ConfigGet);
-  finally
-    Context.FreeEntity<T>(LEntity);
-  end;
+  inherited Create(AContext, ARequest, AResponse);
+  FWriter := TTHttpEntityWriter<T>.Create(AContext.Context);
+  FWriter.OnApplyDetails := ApplyDetails;   // optional hooks
+end;
+
+procedure TAPIReadWriteController<T>.Insert;
+begin
+  FResponse.Content := FWriter.Insert(FRequest.JSonContent);
 end;
 
 procedure TAPIReadWriteController<T>.Delete(
   const AID: TTPrimaryKey; const AVersionID: TTVersion);
 begin
-  Context.Delete<T>(AID, AVersionID);
+  FWriter.Delete(AID, AVersionID);
 end;
 ```
+
+- **Reader**: `Get(AID)` (default `WithDetails`), `Find(AID)` (`EntityOnly`), `SelectAll` and `Select(AJSonFilter)` (`WithRelations`, answer `{"count", "data"}`: `count` is every matching row, `data` the page), `Metadata`. Filter limits come from the constructor: `Create(AContext)` uses `TTHttpFilterParameters.Defaults`, `Create(AContext, AFilterParameters)` yours; `SelectAll` is bounded by `MaxLimit` too. Events: `OnAddEntityFilter(var AFilter: TTFilter)` (narrow with `AFilter.AddWhere` + `AddParameter`), `OnBeforeSerializeEntity`.
+- **Writer**: `Insert(AJSonEntity)` (takes the id from the sequence when the body has none), `Update(AJSonEntity)` (reloads the row before answering: the body lacks the change tracking columns), `Delete(AID, AVersionID)`, `CreateNew` (id assigned, nothing inserted). Events: `OnBeforeInsert`/`OnAfterInsert`, `OnBeforeUpdate`/`OnAfterUpdate`, `OnBeforeDelete`/`OnAfterDelete`, `OnApplyDetails` (after the write, before `OnAfter*`). Each write runs in one transaction with its events, so an exception in any of them rolls the row back.
+- Every serializing method has an overload taking a `TTJSonSerializerConfig`. A missing id is `ETHttpNotFound` (404); a stale version on `Delete` is `ETConcurrentUpdateException` (409).
 
 ## 3. Request / response (`Trysil.Http.Classes`)
 
