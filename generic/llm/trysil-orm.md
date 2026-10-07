@@ -20,6 +20,8 @@ Trysil is a Delphi ORM. Entities are plain classes decorated with attributes; `T
 | `[TTable]`, `[TColumn]`, `[TRelation]`, `[TDetailColumn]`, change-tracking attrs | `Trysil.Attributes` |
 | `[TRequired]`, `[TMaxLength]`, `[TGreater]`, `[TEMail]`, … | `Trysil.Validation.Attributes` |
 | `ETException`, `ETValidationException`, `ETConcurrentUpdateException` | `Trysil.Exceptions` |
+| `TTEvent<T>`, `TTEntityEvents<T>`, `TTEventRegistration` | `Trysil.Events` |
+| `[TInsertEvent]`, `[TBeforeInsertEvent]`, … (event attributes) | `Trysil.Events.Attributes` |
 
 ## 0. Quickstart - end to end (SQLite)
 
@@ -725,7 +727,7 @@ All Trysil exceptions derive from `ETException` (`Trysil.Exceptions`):
 - `ETValidationException` exposes the failures only through its `.Message` text - the per-field list is not individually iterable. Read `E.Message` for the formatted reasons.
 - `Get<T>(id)` returns `nil` when the row does not exist; it does **not** raise. Use `TryGet<T>(id, entity): Boolean` for the explicit form.
 - **`Refresh<T>` raises when the row is gone.** It used to leave the entity untouched and say nothing, so the caller went on working on a record that no longer exists believing it had just re-read it. Use `TryRefresh<T>(AEntity): Boolean` when a missing row is an expected outcome.
-- **`OldEntity<T>` returns `nil` when there is no old row**, and it must be **first read in a `Before*` event**: it is memoized on first access, and a first read in `DoAfter` would hand back the row the command has just written. Reading it in `DoBefore` and using it in `DoAfter` is fine. The event property's clone belongs to the event, which frees it: do not free it or hand it to a lazy reference. A clone you get by calling `Context.OldEntity<T>` yourself is yours, freed with `FreeClone<T>`.
+- **`OldEntity<T>` returns `nil` when there is no old row**, and it must be **first read in a `Before*` event**: it is memoized on first access, and a first read in `DoAfter` would hand back the row the command has just written. Reading it in `DoBefore` and using it in `DoAfter` is fine. The event property's clone belongs to the event, which frees it: do not free it or hand it to a lazy reference. A clone you get by calling `Context.OldEntity<T>` yourself is yours, freed with `FreeClone<T>`. In the events of an **insert** the `OldEntity` property is always `nil` - there is no row yet - and reading it never raises.
 - **`Insert<T>` refuses an entity whose primary key is zero.** Nothing assigns a key on the way in except `CreateEntity<T>`, which takes one from the sequence. An entity built by a deserializer has no key: call `SetSequenceID<T>` before inserting it.
 
 ## 12. Validation, custom validators & lifecycle events
@@ -785,7 +787,38 @@ Any failure added makes the resolver raise `ETValidationException` before the ro
 procedure OnBeforeInsert;   // must take no parameters
 ```
 
-These run your code; they are distinct from the change-tracking attributes in section 8, which auto-fill columns.
+These run your code; they are distinct from the change-tracking attributes in section 8, which auto-fill columns. They must be `public` (a non-public one is silently never called), they get neither the context nor `OldEntity`, and methods inherited from an ancestor fire too. An overridden virtual event method fires once.
+
+**Event classes** - when the rule needs the context or the old row, write a class instead. The usual form is one class per entity, `TTEntityEvents<T>` (`Trysil.Events`), registered from the unit that holds the rules, so the entity unit (which the Trysil Expert may regenerate) knows nothing of it:
+
+```delphi
+uses
+  Trysil.Exceptions,
+  Trysil.Events,
+  Persons.Model;
+
+type
+  TPersonEvents = class(TTEntityEvents<TPerson>)
+  strict protected
+    procedure BeforeInsert; override;   // also AfterInsert, BeforeUpdate,
+    procedure BeforeUpdate; override;   // AfterUpdate, BeforeDelete, AfterDelete
+  end;
+
+procedure TPersonEvents.BeforeUpdate;
+begin
+  if Entity.Lastname <> OldEntity.Lastname then   // Context is available too
+    raise ETException.Create('Lastname cannot change');
+end;
+
+initialization
+  TTEventRegistration.RegisterEvents<TPerson, TPersonEvents>;
+```
+
+- Override only the methods you need; the others are empty. Raising in a `Before*` method stops the command.
+- `RegisterEvents<T, E>` requires `E` to be a `TTEntityEvents<T>`, so the compiler refuses an event class for another entity. Always register through `TTEventRegistration`, not through `TTEventRegistry`.
+- One registration per entity: registering the same entity twice, or a `nil` class, raises. A registration is inherited by derived entities and lasts for the life of the process.
+- The older form ties a `TTEvent<T>` (with `DoBefore` / `DoAfter`) to the entity with `[TInsertEvent(TPersonInsertEvent)]`, `[TUpdateEvent(...)]`, `[TDeleteEvent(...)]` on the entity class; entity and event then have to live in the same unit. **Do not mix the attribute and the registration on the same entity hierarchy**: it raises, but only at the first write of the operation in conflict.
+- Do not declare a constructor in an event class; if you must, its signature is `Create(const AContext: TTContext; const AEntity: T; const AOperation: TTEventOperation)` (`TTEventOperation` is in `Trysil.Events.Abstract`). Never create an event yourself: the framework does.
 
 ## 13. Logging - see the generated SQL
 
