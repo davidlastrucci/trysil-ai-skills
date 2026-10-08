@@ -10,7 +10,7 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 | `TTHttpController<C>` | `Trysil.Http.Controller` |
 | `TTHttpContext` | `Trysil.Http.Context` |
 | `TTHttpRequest`, `TTHttpResponse`, `TTHttpUser` | `Trysil.Http.Classes` |
-| `[TUri]`, `[TGet]`, `[TPost]`, `[TPut]`, `[TDelete]`, `[TArea]`, `[TAuthorizationType]` | `Trysil.Http.Attributes` |
+| `[TUri]`, `[TGet]`, `[TPost]`, `[TPut]`, `[TDelete]`, `[TArea]`, `[TAuthorizationType]`, `[TNotSqid]` | `Trysil.Http.Attributes` |
 | `TTHttpAuthorizationType` | `Trysil.Http.Types` |
 | CORS config (`FServer.CorsConfig`) | `Trysil.Http.Cors` |
 | `TTHttpAuthenticationBasic`/`Bearer<C>` | `Trysil.Http.Authentication.{Basic,Bearer}` (`Digest` exists in `...Authentication.Digest` but is deprecated) |
@@ -77,7 +77,9 @@ Attributes from `Trysil.Http.Attributes`:
 | `[TArea('name')]` | method | required user area/permission |
 | `[TAuthorizationType(TTHttpAuthorizationType.None)]` | class/method | bypass auth (e.g. login) - read on both, the method wins |
 
-`?` segments are positional path parameters bound to the method's parameters in order. `/?` → one param, `/?/?` → two.
+`?` segments are positional path parameters bound to the method's parameters in order. `/?` → one param, `/?/?` → two. Every parameter of a routed method must be an integer, one per `?`, and the `?` only at the end of the route: a `String` parameter or a wrong count makes registration raise `ETHttpServerException`. Pass strings in the query string (`FRequest.Parameters`) or in the body (`FRequest.JSonContent`).
+
+With Sqids on (`TTJSonSqids.Instance.UseSqids := True`) every `?` is read as a canonical sqid and a plain number answers 404. Mark a parameter that is **not** an id (a version, a year, a page) with `[TNotSqid]`; methods on the same route must mark the same positions, and an override of a routed method repeats neither the route attribute nor `[TNotSqid]`. With Sqids off the attribute changes nothing. The HTTP filter takes a sqid on primary key and `TTLazy<T>` columns.
 
 ```delphi
 TAPIReadOnlyController<T: class> = class(TAPIController)
@@ -111,7 +113,9 @@ public
 
   [TDelete('/?/?')]
   [TArea('write')]
-  procedure Delete(const AID: TTPrimaryKey; const AVersionID: TTVersion);
+  procedure Delete(
+    const AID: TTPrimaryKey;
+    [TNotSqid] const AVersionID: TTVersion);   // the version is never a sqid
 end;
 ```
 
