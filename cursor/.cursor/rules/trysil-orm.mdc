@@ -829,7 +829,7 @@ end.
 ```
 
 - Override only the methods you need; the others are empty. Raising in a `Before*` method stops the command.
-- Naming follows the Trysil Expert: the class is `T<Entity>Rules`, the unit `<Project>.Rule.<Entity>`, in a `Rules` folder next to `Model` (never inside it: `Model` holds only generated code). **Generate entity model** writes this unit, empty and registered, when **Generate & register rules** is ticked, and never overwrites it once it exists.
+- Naming follows the Trysil Expert: the class is `T<Entity>Rules`, the unit `<Project>.Rule.<Entity>`, in a `Rules` folder next to `Model` (never inside it: `Model` holds only generated code). **Generate entity model** writes this unit, registered and with the six overridable methods listed as comments, when **Generate & register rules** is ticked, and never overwrites it once it exists: uncomment the methods you need and implement them.
 - `RegisterEvents<T, E>` requires `E` to be a `TTEntityEvents<T>`, so the compiler refuses an event class for another entity. Always register through `TTEventRegistration`, not through `TTEventRegistry`.
 - One registration per entity: registering the same entity twice, or a `nil` class, raises. A registration is inherited by derived entities and lasts for the life of the process.
 - The older form ties a `TTEvent<T>` (with `DoBefore` / `DoAfter`) to the entity with `[TInsertEvent(TPersonInsertEvent)]`, `[TUpdateEvent(...)]`, `[TDeleteEvent(...)]` on the entity class; entity and event then have to live in the same unit. **Do not mix the attribute and the registration on the same entity hierarchy**: it raises, but only at the first write of the operation in conflict.
