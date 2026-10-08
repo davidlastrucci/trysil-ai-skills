@@ -797,29 +797,38 @@ These run your code; they are distinct from the change-tracking attributes in se
 **Event classes** - when the rule needs the context or the old row, write a class instead. The usual form is one class per entity, `TTEntityEvents<T>` (`Trysil.Events`), registered from the unit that holds the rules, so the entity unit (which the Trysil Expert may regenerate) knows nothing of it:
 
 ```delphi
+unit Persons.Rule.Person;   // folder Rules, next to Model
+
+interface
+
 uses
   Trysil.Exceptions,
   Trysil.Events,
-  Persons.Model;
+  Persons.Model.Person;
 
 type
-  TPersonEvents = class(TTEntityEvents<TPerson>)
+  TPersonRules = class(TTEntityEvents<TPerson>)
   strict protected
     procedure BeforeInsert; override;   // also AfterInsert, BeforeUpdate,
     procedure BeforeUpdate; override;   // AfterUpdate, BeforeDelete, AfterDelete
   end;
 
-procedure TPersonEvents.BeforeUpdate;
+implementation
+
+procedure TPersonRules.BeforeUpdate;
 begin
   if Entity.Lastname <> OldEntity.Lastname then   // Context is available too
     raise ETException.Create('Lastname cannot change');
 end;
 
 initialization
-  TTEventRegistration.RegisterEvents<TPerson, TPersonEvents>;
+  TTEventRegistration.RegisterEvents<TPerson, TPersonRules>;
+
+end.
 ```
 
 - Override only the methods you need; the others are empty. Raising in a `Before*` method stops the command.
+- Naming follows the Trysil Expert: the class is `T<Entity>Rules`, the unit `<Project>.Rule.<Entity>`, in a `Rules` folder next to `Model` (never inside it: `Model` holds only generated code). **Generate entity model** writes this unit, empty and registered, when **Generate & register rules** is ticked, and never overwrites it once it exists.
 - `RegisterEvents<T, E>` requires `E` to be a `TTEntityEvents<T>`, so the compiler refuses an event class for another entity. Always register through `TTEventRegistration`, not through `TTEventRegistry`.
 - One registration per entity: registering the same entity twice, or a `nil` class, raises. A registration is inherited by derived entities and lasts for the life of the process.
 - The older form ties a `TTEvent<T>` (with `DoBefore` / `DoAfter`) to the entity with `[TInsertEvent(TPersonInsertEvent)]`, `[TUpdateEvent(...)]`, `[TDeleteEvent(...)]` on the entity class; entity and event then have to live in the same unit. **Do not mix the attribute and the registration on the same entity hierarchy**: it raises, but only at the first write of the operation in conflict.
