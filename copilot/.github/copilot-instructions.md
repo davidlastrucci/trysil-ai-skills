@@ -109,12 +109,12 @@ FConnection := TTPostgreSQLConnection.Create('Pg');
 `Config` is the **default** for every connection definition. To give one connection its own pool limits - typical when an application hosts a busy app database and a quiet log database - put the parameters in the `TTFireDACConnectionParameters` record and register through the factory:
 
 ```delphi
-LParameters := Default(TTFireDACConnectionParameters);   // records: zero it first
-LParameters.Driver := 'SQLite';
-LParameters.DatabaseName := 'log.db';
+LParameters := TTFireDACConnectionParameters.Create('SQLite', 'log.db');
 LParameters.PoolParameters := TTFireDACPoolParameters.Create(True, 2);
 TTFireDACConnectionFactory.Instance.RegisterConnection('Log', LParameters);
 ```
+
+Build `TTFireDACConnectionParameters` with a constructor - `Create(Driver, DatabaseName)`, `Create(Driver, Server, Username, Password, DatabaseName)` or `Create(Driver, Server, Port, Username, Password, DatabaseName)` - never field by field on a local: a local record only initialises its managed fields, so `Port` and `PoolParameters` would keep garbage. The constructor sets every field (`Port` 0 = driver default); `CharacterSet` and `PoolParameters` are assigned afterwards.
 
 `TTFireDACPoolParameters` is immutable; `IsAssigned` separates "not declared, use the global `Config`" from "declared", so `Create(False, 1)` disables pooling for that one connection instead of inheriting the global setting.
 
@@ -1440,7 +1440,7 @@ A `GetOrAdd` that cannot build the tenant always raises **`ETTenantUnavailable`*
 
 `Remove(AName)` detaches the tenant from the registry - `TryGet` and `GetAll` stop seeing it - but **does not destroy it**. Tenants handed out by `TryGet`/`GetOrAdd` are borrowed references, and a thread that resolved one an instant earlier may be about to use its connection; the instance is released with the registry. Reclaiming memory per tenant would need a use count, which is a design decision, not a call you can make from `Remove`.
 
-In `GetParameters`, zero the record first: `Result := Default(TTFireDACConnectionParameters);`. A local record only initialises its managed fields.
+In `GetParameters`, build the record with a constructor, never field by field: `Result := TTFireDACConnectionParameters.Create('SQLite', Format('%s.db', [FName]));` (or the overloads with server and credentials, with or without port). A function result only initialises its managed fields; the constructor sets them all.
 
 ## 9. Logging
 

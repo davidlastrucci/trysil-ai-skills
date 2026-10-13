@@ -109,12 +109,12 @@ FConnection := TTPostgreSQLConnection.Create('Pg');
 `Config` is the **default** for every connection definition. To give one connection its own pool limits - typical when an application hosts a busy app database and a quiet log database - put the parameters in the `TTFireDACConnectionParameters` record and register through the factory:
 
 ```delphi
-LParameters := Default(TTFireDACConnectionParameters);   // records: zero it first
-LParameters.Driver := 'SQLite';
-LParameters.DatabaseName := 'log.db';
+LParameters := TTFireDACConnectionParameters.Create('SQLite', 'log.db');
 LParameters.PoolParameters := TTFireDACPoolParameters.Create(True, 2);
 TTFireDACConnectionFactory.Instance.RegisterConnection('Log', LParameters);
 ```
+
+Build `TTFireDACConnectionParameters` with a constructor - `Create(Driver, DatabaseName)`, `Create(Driver, Server, Username, Password, DatabaseName)` or `Create(Driver, Server, Port, Username, Password, DatabaseName)` - never field by field on a local: a local record only initialises its managed fields, so `Port` and `PoolParameters` would keep garbage. The constructor sets every field (`Port` 0 = driver default); `CharacterSet` and `PoolParameters` are assigned afterwards.
 
 `TTFireDACPoolParameters` is immutable; `IsAssigned` separates "not declared, use the global `Config`" from "declared", so `Create(False, 1)` disables pooling for that one connection instead of inheriting the global setting.
 

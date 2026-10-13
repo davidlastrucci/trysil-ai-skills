@@ -345,7 +345,7 @@ A `GetOrAdd` that cannot build the tenant always raises **`ETTenantUnavailable`*
 
 `Remove(AName)` detaches the tenant from the registry - `TryGet` and `GetAll` stop seeing it - but **does not destroy it**. Tenants handed out by `TryGet`/`GetOrAdd` are borrowed references, and a thread that resolved one an instant earlier may be about to use its connection; the instance is released with the registry. Reclaiming memory per tenant would need a use count, which is a design decision, not a call you can make from `Remove`.
 
-In `GetParameters`, zero the record first: `Result := Default(TTFireDACConnectionParameters);`. A local record only initialises its managed fields.
+In `GetParameters`, build the record with a constructor, never field by field: `Result := TTFireDACConnectionParameters.Create('SQLite', Format('%s.db', [FName]));` (or the overloads with server and credentials, with or without port). A function result only initialises its managed fields; the constructor sets them all.
 
 ## 9. Logging
 
