@@ -14,6 +14,8 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 |---|---|
 | `TTHttpServer<C>` | `Trysil.Http` |
 | `TTHttpController<C>` | `Trysil.Http.Controller` |
+| `TTHttpRoute` | `Trysil.Http.Rtti` |
+| `TTHttpControllerID` | `Trysil.Http.Types` |
 | `TTHttpContext` | `Trysil.Http.Context` |
 | `TTHttpRequest`, `TTHttpResponse`, `TTHttpUser` | `Trysil.Http.Classes` |
 | `[TUri]`, `[TGet]`, `[TPost]`, `[TPut]`, `[TDelete]`, `[TArea]`, `[TAuthorizationType]`, `[TNotSqid]` | `Trysil.Http.Attributes` |
@@ -34,7 +36,7 @@ REST hosting with attribute-based routing on top of the JSON module. `TTHttpCont
 ## Architecture
 
 - `TTHttpServer<C>` - the server. `C` is your **per-request context type** (holds the connection + `TTHttpContext`, injected into every controller).
-- `TTHttpController<C>` - base controller. Has `FContext: C`, `FRequest: TTHttpRequest`, `FResponse: TTHttpResponse`.
+- `TTHttpController<C>` - base controller. Has `FContext: C`, `FRequest: TTHttpRequest`, `FResponse: TTHttpResponse`, and `class function EntityClass: TClass; virtual;` (default `nil`): a generic controller overrides it to name the entity it serves, which tools such as **trysil-openapi** read.
 - Routing comes from attributes on controller methods. One controller class can be registered under a URI prefix; generic controllers (`TController<T>`) let one class serve many entity types.
 
 ## 1. Per-request context (dependency injection target)
@@ -200,6 +202,12 @@ POST   /company              -> Insert
 PUT    /company              -> Update
 DELETE /company/123/1        -> Delete(123, version 1)
 ```
+
+### Inspecting the server and registering by class
+
+- `FServer.Routes: TArray<TTHttpRoute>` - every route registered so far. `TTHttpRoute` (`Trysil.Http.Rtti`) is a read-only record: `ControllerClass`, `Method` (`TRttiMethod`), `ControllerID` (`TTHttpControllerID`: `Uri` in lower case with the `BaseUri` and the `?` placeholders, `MethodType`), `AuthorizationType`, `Areas` (lower case), `NotSqids` (one `Boolean` per placeholder). `Method` is **borrowed from the server**: never free it, never use it after the server is destroyed.
+- `FServer.AuthenticationClass: TClass` - the registered authentication class, `nil` without one. `TTHttpAbstractAuthentication<C>.SchemeName: String` is a class function returning the scheme the authentication reads (`'Bearer'`, `'Basic'`, ...).
+- `FServer.RegisterControllerClass(AControllerClass, AUri)` - non-generic registration, checked at run time: the class must descend from `TTHttpController<C>`, otherwise (or with `nil`) it raises `ETHttpServerException`, logged like the generic form. Use it from **generic code**, where the Delphi compiler rejects (E2515) a call to `RegisterController<R>`; anywhere else prefer `RegisterController<R>`, checked at compile time.
 
 ## 5. CORS (`Trysil.Http.Cors`)
 
