@@ -51,7 +51,7 @@ FServer.Start;
 
 | Attribute | Scope | Effect |
 |---|---|---|
-| `[TTag('Name')]` | class | the tag of every operation of the controller |
+| `[TTag('Name')]` | class | the tag of every operation of the controller (otherwise: first path segment) |
 | `[TDescription('text')]` | class | the description of that tag |
 | `[TSummary('text')]` | method | operation summary |
 | `[TDescription('text')]` | method | operation description |
@@ -163,7 +163,8 @@ If `EntityClass` returns `nil`, a shape without a class raises `ETOpenApiExcepti
   409 is never implicit: declare it. An explicit `[TResponse]` with the same code wins.
 
 - A route without attributes gets only its path, parameters, security and implicit errors: no request body, no 200.
-- Without `[TTag]` the operations have no tag.
+- Without `[TTag]` the tag is the first segment of the path after the `BaseUri`, lower-case (`/customer/{id}` -> `customer`); no tag when that segment is a placeholder or the path is the `BaseUri` alone. Automatic tags have no description.
+- The `BaseUri` goes in `servers` (`[{"url": "/api"}]`, as set on the server, omitted when empty) and every path is relative to it.
 
 ## 5. Entity schemas (`components.schemas`)
 
@@ -208,4 +209,4 @@ An entity schema is the JSON the Trysil serializer writes, not the database tabl
 - One document per context type `C` for the life of the process.
 - The document is built at `Register`: controllers registered later are not described.
 - Placeholder names: the first route of a path wins.
-- No automatic tags and no automatic success responses: declare them with attributes.
+- No automatic success responses and no tag descriptions: declare them with attributes.
