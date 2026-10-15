@@ -155,7 +155,7 @@ If `EntityClass` returns `nil`, a shape without a class raises `ETOpenApiExcepti
 - **Same path, different parameter names**: OpenAPI forbids two templates that differ only in the names, so every route of a path uses the names of the **first registered** route (within one controller the order follows RTTI and is not predictable). Use the same parameter names on routes that share a path.
 - **Path parameter type**: with Sqids on (`TTJSonSqids.Instance.UseSqids`, read at `Register`) `{type: string, minLength: 8}`; with `[TNotSqid]` or Sqids off, `integer` `int32`.
 - **Security**: with an authentication registered, `components.securitySchemes` holds one `{type: http, scheme: <name>}` entry named after the lower-case scheme of the authentication class (`bearer`, `basic`, `digest`); protected routes get `security: [{<name>: []}]`. Anonymous routes (`[TAuthorizationType(TTHttpAuthorizationType.None)]`) always get `security: []`. Without authentication protected routes carry no `security`.
-- **Implicit error responses**, schema `TTOpenApiError`:
+- **Implicit error responses**, schema `TTOpenApiError`, each with an `example` carrying its own code and description (`{"status": 400, "message": "Bad request"}`):
 
   | Code | When |
   |---|---|
