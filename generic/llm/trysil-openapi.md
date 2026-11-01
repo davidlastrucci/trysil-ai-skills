@@ -187,6 +187,7 @@ An entity schema is the JSON the Trysil serializer writes, not the database tabl
   | `TTNullable<T>` | type `[<T>, "null"]` |
   | primary key | the id schema (integer, or Sqids string) |
   | `TTLazy<T>` field `FCustomer` | `customerID` (id schema) plus `customer` (`$ref`, `readOnly`) |
+  | eager field `FCustomer: TCustomer` | `customerID` (id schema) plus `customer` (`$ref`, writable) |
   | `TTLazyList<T>`, detail columns | array of `$ref` |
 
 - Validation attributes (`Trysil.Validation.Attributes`) become constraints:

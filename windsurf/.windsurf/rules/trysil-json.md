@@ -48,6 +48,8 @@ constructor Create(const AMaxLevels: Integer; const ADetails: Boolean);
 
 `AMaxLevels` bounds **queries**, not just payload: past the level the serializer does not resolve the lazy reference at all, it emits the foreign key id and moves on.
 
+An **eager relation** (a member of an entity type, not a `TTLazy<T>`, mapped with `[TColumn]` on the foreign key) goes through JSON the same way: `<name>ID` always, plus the nested object when the level allows it. On the way in, `<name>ID` sets the key of the related object, then the nested object, when the body has one, is read into it; a `<name>` that is not an object is refused with `ETJSonException`.
+
 **On a list, depth is paid per row.** At `0` a `TTLazy<T>` is written as its foreign key id **without a query**, so the client already has the identifier for free; at `1` the gate opens and every reference is resolved, which is **one query per relation per row**. A list of 50 rows with 4 relations costs 2 queries at `Create(0, False)` and 202 at `Create(1, False)`. When the list needs only the ids of the related rows, use `Create(0, False)`; when it needs their columns (the customer name next to each order), map a read-only `[TJoin]` entity and select that instead - the related columns come back in the same row from one query, with no lazy reference left to resolve.
 
 ```delphi
