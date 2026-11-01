@@ -653,6 +653,24 @@ stores a **clone** of the object you assign, so you keep owning (and must free)
 the instance you passed, and one instance can be assigned to several owners.
 See section 2a.
 
+### Eager relations - prefer `TTLazy<T>`
+
+A member typed as a plain entity (`FCustomer: TCustomer`, not `TTLazy<TCustomer>`)
+with `[TColumn('CustomerID')]` is an **eager** relation: the related entity is read
+with every row that holds it. Default to `TTLazy<T>`; use an eager member only
+when the relation is always needed and never NULL. If you do:
+
+- The entity **creates it in its constructor and frees it in its destructor** -
+  the framework does not create it, and a `nil` member is an access violation.
+  It is not in the identity map.
+- Every row read runs **one more select**, whether the related entity is used or not.
+- `Insert`/`Update` write the primary key of the held object as the foreign key.
+- A NULL foreign key reads as 0 (empty object) and an update writes **0, not NULL**:
+  never use an eager member for an optional relation.
+- `CloneEntity` and `TTSession<T>` copies carry a full copy of the related object.
+- Eager detail lists (`[TDetailColumn]` on a plain list) are not documented:
+  use `TTLazyList<T>`.
+
 ## 7. TTSession<T> - Unit of Work (`Trysil.Session`)
 
 Clones entities on creation; `ApplyChanges` writes only what was marked with `Insert`, `Update` or `Delete` - a modified clone not passed to `Update` is not written. Full cloning is the only correct implementation in Delphi (no dynamic proxies). The session has explicit state per entity (Original/Inserted/Updated/Deleted); cloning gives isolation, not field-level diffing.
