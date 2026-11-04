@@ -805,7 +805,7 @@ Any failure added makes the resolver raise `ETValidationException` before the ro
 procedure OnBeforeInsert;   // must take no parameters
 ```
 
-These run your code; they are distinct from the change-tracking attributes in section 8, which auto-fill columns. They must be `public` (a non-public one is silently never called), they get neither the context nor `OldEntity`, and methods inherited from an ancestor fire too. An overridden virtual event method fires once.
+These run your code; they are distinct from the change-tracking attributes in section 8, which auto-fill columns. Put them in the `protected` section, not `public` (only Trysil should call them), and add to every unit that declares a class with event methods, ancestors included, `{$RTTI EXPLICIT FIELDS([vcPrivate, vcProtected, vcPublic, vcPublished]) METHODS([vcProtected, vcPublic, vcPublished]) PROPERTIES([vcPublic, vcPublished])}`: without it a protected event method has no RTTI and is silently never called. They get neither the context nor `OldEntity`, and methods inherited from an ancestor fire too. An overridden virtual event method fires once.
 
 **Event classes** - when the rule needs the context or the old row, write a class instead. The usual form is one class per entity, `TTEntityEvents<T>` (`Trysil.Events`), registered from the unit that holds the rules, so the entity unit (which the Trysil Expert may regenerate) knows nothing of it:
 
