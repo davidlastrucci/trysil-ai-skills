@@ -328,7 +328,7 @@ type
 Key attributes: `[TTable('name')]`, `[TPrimaryKey]`, `[TColumn('col')]`, `[TVersionColumn]`, `[TSequence('seqID')]`, `[TRelation('Table','FK',OwnsObjects)]`, `[TWhereClause('sql')]` + `[TWhereClauseParameter('name', value)]` (compile-time constants only - for runtime filtering use `TTFilterBuilder<T>`).
 
 ### ID generation & `[TSequence]` per driver
-Keep `[TSequence('Name')]` on every entity regardless of the target database. SQLite has no sequence objects - Trysil computes the next ID with `IFNULL(MAX(ROWID), 0) + 1` - but the other supported drivers (PostgreSQL/SQL Server/Firebird/InterBase/MariaDB/Oracle) rely on real sequences/identity. Leaving the attribute in place keeps the model portable: if you later switch driver, the sequence is already declared and nothing in the entity needs to change.
+Keep `[TSequence('Name')]` on every entity regardless of the target database. SQLite has no sequence objects - Trysil computes the next ID from the highest key in the table (`IFNULL(MAX([ID]), 0) + 1`) and never hands out again a key the connection has already seen, so a SQLite file should belong to one application - but the other supported drivers (PostgreSQL/SQL Server/Firebird/InterBase/MariaDB/Oracle) rely on real sequences/identity. Leaving the attribute in place keeps the model portable: if you later switch driver, the sequence is already declared and nothing in the entity needs to change.
 
 Add `{$WARN UNKNOWN_CUSTOM_ATTRIBUTE ERROR}` to units that use Trysil attributes - Trysil resolves attributes via RTTI, so a misspelled attribute name compiles silently otherwise; this turns the typo into a compile error.
 
