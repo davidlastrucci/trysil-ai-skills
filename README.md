@@ -2,7 +2,7 @@
 
 LLM skills for **[Trysil - Delphi ORM](https://github.com/davidlastrucci/Trysil)**: ORM, JSON, HTTP and OpenAPI, for every major coding assistant.
 
-These are instruction documents that teach an AI coding assistant how to use Trysil's public API correctly - entity mapping, CRUD and queries, JSON serialization, REST hosting, and OpenAPI documents. Drop the right files into your project and your agent writes real Trysil code instead of guessing.
+These are instruction documents that teach an AI coding assistant how to use Trysil's public API correctly - entity mapping, CRUD and queries, JSON serialization, REST hosting, OpenAPI documents, and forms bound to entities. Drop the right files into your project and your agent writes real Trysil code instead of guessing.
 
 ## Skills
 
@@ -12,8 +12,9 @@ These are instruction documents that teach an AI coding assistant how to use Try
 | **trysil-json** | `TTJSonContext`, `TTJSonSerializerConfig`, entity/list serialize & deserialize, `DatasetToJSon`, `MetadataToJSon`, `[TJSonIgnore]`. |
 | **trysil-http** | Attribute-routed controllers, `TTHttpServer` bootstrap, per-request context (DI), CORS, Basic/Bearer/Digest/JWT authentication, JSON-driven server-side filtering, multi-tenant hosting, logging. |
 | **trysil-openapi** | `TTOpenApi<C>` OpenAPI 3.1 document for a `TTHttpServer`, `TTOpenApiInfo`, `[TTag]`/`[TSummary]`/`[TRequestBody]`/`[TResponse]` attributes, shapes, predefined filter/metadata/error types, entity schemas and validation constraints. |
+| **trysil-binding** | `TTBinding` with `[TBind]`/`[TBindLookup]` for one entity on plain VCL/FMX controls, `TTDataset<T>` for lists of entities in data-aware controls: `ApplyUpdates`, `Predicate`, `Comparison`, `Locate`/`Lookup`, master/detail with `CreateDetail`. |
 
-`trysil-json` and `trysil-http` build on `trysil-orm` and reference it rather than repeating its content; `trysil-openapi` builds on `trysil-http`. For a REST API you typically want the first three, plus `trysil-openapi` to publish its description.
+`trysil-json` and `trysil-http` build on `trysil-orm` and reference it rather than repeating its content; `trysil-openapi` builds on `trysil-http`, `trysil-binding` on `trysil-orm`. For a REST API you typically want the first three, plus `trysil-openapi` to publish its description.
 
 ## Installing
 
@@ -43,6 +44,7 @@ claude-code/          ← canonical skills (edit these by hand)
   .claude/skills/trysil-json/SKILL.md
   .claude/skills/trysil-http/SKILL.md
   .claude/skills/trysil-openapi/SKILL.md
+  .claude/skills/trysil-binding/SKILL.md
 cursor/               ┐
 copilot/              │  generated from claude-code/
 windsurf/             │  (do not edit by hand)
