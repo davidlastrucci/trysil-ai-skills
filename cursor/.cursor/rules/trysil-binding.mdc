@@ -1,5 +1,5 @@
 ---
-description: Show Trysil entities in a Delphi user interface with the Trysil.Binding package - TTBinding with [TBind]/[TBindLookup] for a single entity on plain VCL/FMX controls (Apply/Retrieve/Populate), and TTDataset<T> for lists of entities in data-aware controls (TDBGrid, TDBEdit), with ApplyUpdates/CancelUpdates, Predicate, Comparison, Locate/Lookup and CreateDetail master/detail. Invoke when writing or reviewing Delphi form code that edits Trysil entities.
+description: Show Trysil entities in a Delphi user interface with the Trysil.Binding package - TTBinding with [TBind]/[TBindLookup] for a single entity on plain VCL/FMX controls (Apply/Retrieve/Populate), TTListViewBinding<T> with [TBindColumn] for lists of entities in a VCL TListView (sorting, typed selection), and TTDataset<T> for lists of entities in data-aware controls (TDBGrid, TDBEdit), with ApplyUpdates/CancelUpdates, Predicate, Comparison, Locate/Lookup and CreateDetail master/detail. Invoke when writing or reviewing Delphi form code that edits Trysil entities.
 globs: **/*.pas
 alwaysApply: false
 ---
@@ -10,6 +10,7 @@ The `Trysil.Binding` package (requires `rtl`, `dbrtl`, `Trysil`; no `Vcl` or `Fm
 
 | Need | Use |
 |---|---|
+| a list of entities in a VCL `TListView`, to look at and select | `TTListViewBinding<T>` (package `Trysil.Binding.Vcl`) |
 | one entity on plain controls (`TEdit`, `TLabel`, `TComboBox`, VCL or FMX) | `TTBinding` |
 | a list of entities in data-aware controls (`TDBGrid`, `TDBEdit`, `TDBNavigator`) | `TTDataset<T>` |
 
@@ -25,6 +26,9 @@ The `Trysil.Binding` package (requires `rtl`, `dbrtl`, `Trysil`; no `Vcl` or `Fm
 | `TTPredicate<T>` | `Trysil.Generics.Collections` |
 | `TComparison<T>` | `System.Generics.Defaults` |
 | `TTLazyList<T>` | `Trysil.Lazy` |
+| `[TBindColumn]` | `Trysil.Binding.Attributes` |
+| `TTListViewBinding<T>` (VCL, package `Trysil.Binding.Vcl`) | `Trysil.Binding.Vcl.ListView` |
+| `TTListBinding<T>`, `ETBindingColumnsNotFound`, `ETBindingColumnCount` | `Trysil.Binding.List`, `Trysil.Binding.Exceptions` |
 
 ## 1. TTBinding - one entity, plain controls
 
@@ -177,3 +181,46 @@ FProducts.Open;
 - `ApplyUpdates` on the **master** writes the master and every open detail in one transaction. `ApplyUpdates` on the detail writes the detail only.
 - The detail is yours to free, before or after the master.
 - Do not wire a `MasterSource` / `MasterFields`: use `CreateDetail<D>`.
+
+## 3. TTListViewBinding<T> - a list of entities in a TListView
+
+Display and selection only, as a snapshot: edit through a detail form with `TTBinding`, or use `TTDataset<T>` for editable grids. Columns are designed in the IDE (`ViewStyle = vsReport`); the binding says what each one shows, in column order.
+
+```delphi
+// The TListView is a field of this form: attributes on the field
+[TBindColumn('ID')]
+[TBindColumn('OrderDate', 'dd/mm/yyyy')]
+[TBindColumn('Customer.CompanyName')]
+[TBindColumn('Total', '#,##0.00')]
+OrdersListView: TListView;
+
+FBinding := TTListViewBinding<TOrder>.Create(Self, OrdersListView);
+```
+
+```delphi
+// The TListView is inherited from a base form: columns in code
+FBinding := TTListViewBinding<TOrder>.Create(ListView);
+FBinding.AddColumn('ID');
+FBinding.AddColumn('OrderDate', 'dd/mm/yyyy');
+FBinding.AddColumn('Customer.CompanyName');
+```
+
+```delphi
+FContext.Select<TOrder>(FOrders, LFilter);
+FBinding.Apply(FOrders);                 // any TEnumerable<TOrder>
+LOrder := FBinding.Selected;             // typed, nil without selection
+FBinding.Select(LOrder);
+FBinding.Select(                         // after a reload: find the row by key
+  function(const AOrder: TOrder): Boolean
+  begin
+    result := AOrder.ID = LID;
+  end);
+```
+
+- A column is a property path; dots follow related objects, `TTLazy<T>` included (it loads: one query per row; prefer a JOIN entity for long lists). An empty link gives an empty cell; a null `TTNullable<T>` too.
+- Format: `FormatDateTime` for dates, `FormatFloat` for numbers; without it the field-binding converters.
+- The number of declared columns must equal the `TListView` columns: `ETBindingColumnCount`, none at all `ETBindingColumnsNotFound`.
+- Header click sorts by value (numbers as numbers, dates as dates, empties last), a second click reverses; the caller's list is not reordered; `SortOnColumnClick := False` turns it off; `Sort(AColumn, ADescending)` from code.
+- The entities stay the caller's: after reading or freeing the list, call `Apply` again.
+- No events of its own: use `OnSelectItem` / `OnDblClick` of the `TListView` and read `Selected`. Never cast `ListView.Selected.Data` yourself.
+- The binding takes `OnColumnClick` (calling a previous handler) and restores it when freed: free the binding before the `TListView`, e.g. in `FormDestroy`.
