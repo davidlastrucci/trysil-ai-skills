@@ -1,5 +1,5 @@
 ---
-description: Show Trysil entities in a Delphi user interface with the Trysil.Binding package - TTBinding with [TBind]/[TBindLookup] for a single entity on plain VCL/FMX controls (Apply/Retrieve/Populate), TTListViewBinding<T> with [TBindColumn] for lists of entities in a VCL TListView (sorting, typed selection), and TTDataset<T> for lists of entities in data-aware controls (TDBGrid, TDBEdit), with ApplyUpdates/CancelUpdates, Predicate, Comparison, Locate/Lookup and CreateDetail master/detail. Invoke when writing or reviewing Delphi form code that edits Trysil entities.
+description: Show Trysil entities in a Delphi user interface with the Trysil.Binding package - TTBinding with [TBind]/[TBindLookup] for a single entity on plain VCL/FMX controls (Apply/Retrieve/Populate), list binding for lists of entities in a VCL TListView or TStringGrid and an FMX TStringGrid or TListView ([TBindColumn] by position, [TBindItem] by appearance object name, sorting, typed selection), and TTDataset<T> for lists of entities in data-aware controls (TDBGrid, TDBEdit), with ApplyUpdates/CancelUpdates, Predicate, Comparison, Locate/Lookup and CreateDetail master/detail. Invoke when writing or reviewing Delphi form code that edits Trysil entities.
 globs: **/*.pas
 alwaysApply: false
 ---
@@ -10,7 +10,8 @@ The `Trysil.Binding` package (requires `rtl`, `dbrtl`, `Trysil`; no `Vcl` or `Fm
 
 | Need | Use |
 |---|---|
-| a list of entities in a VCL `TListView`, to look at and select | `TTListViewBinding<T>` (package `Trysil.Binding.Vcl`) |
+| a list of entities in a VCL `TListView` or `TStringGrid`, to look at and select | `TTListViewBinding<T>`, `TTStringGridBinding<T>` (package `Trysil.Binding.Vcl`) |
+| a list of entities in an FMX `TStringGrid` or `TListView`, to look at and select | `TTFmxStringGridBinding<T>`, `TTFmxListViewBinding<T>` (package `Trysil.Binding.Fmx`) |
 | one entity on plain controls (`TEdit`, `TLabel`, `TComboBox`, VCL or FMX) | `TTBinding` |
 | a list of entities in data-aware controls (`TDBGrid`, `TDBEdit`, `TDBNavigator`) | `TTDataset<T>` |
 
@@ -26,9 +27,12 @@ The `Trysil.Binding` package (requires `rtl`, `dbrtl`, `Trysil`; no `Vcl` or `Fm
 | `TTPredicate<T>` | `Trysil.Generics.Collections` |
 | `TComparison<T>` | `System.Generics.Defaults` |
 | `TTLazyList<T>` | `Trysil.Lazy` |
-| `[TBindColumn]` | `Trysil.Binding.Attributes` |
+| `[TBindColumn]`, `[TBindItem]` | `Trysil.Binding.Attributes` |
 | `TTListViewBinding<T>` (VCL, package `Trysil.Binding.Vcl`) | `Trysil.Binding.Vcl.ListView` |
-| `TTListBinding<T>`, `ETBindingColumnsNotFound`, `ETBindingColumnCount` | `Trysil.Binding.List`, `Trysil.Binding.Exceptions` |
+| `TTStringGridBinding<T>` (VCL, package `Trysil.Binding.Vcl`) | `Trysil.Binding.Vcl.StringGrid` |
+| `TTFmxStringGridBinding<T>` (FMX, package `Trysil.Binding.Fmx`) | `Trysil.Binding.Fmx.StringGrid` |
+| `TTFmxListViewBinding<T>` (FMX, package `Trysil.Binding.Fmx`) | `Trysil.Binding.Fmx.ListView` |
+| `TTListBinding<T>`, `ETBindingColumnsNotFound`, `ETBindingColumnCount`, `ETBindingItemNotFound` | `Trysil.Binding.List`, `Trysil.Binding.Exceptions` |
 
 ## 1. TTBinding - one entity, plain controls
 
@@ -182,7 +186,7 @@ FProducts.Open;
 - The detail is yours to free, before or after the master.
 - Do not wire a `MasterSource` / `MasterFields`: use `CreateDetail<D>`.
 
-## 3. TTListViewBinding<T> - a list of entities in a TListView
+## 3. List binding - a list of entities in a TListView or TStringGrid
 
 Display and selection only, as a snapshot: edit through a detail form with `TTBinding`, or use `TTDataset<T>` for editable grids. Columns are designed in the IDE (`ViewStyle = vsReport`); the binding says what each one shows, in column order.
 
@@ -224,3 +228,26 @@ FBinding.Select(                         // after a reload: find the row by key
 - The entities stay the caller's: after reading or freeing the list, call `Apply` again.
 - No events of its own: use `OnSelectItem` / `OnDblClick` of the `TListView` and read `Selected`. Never cast `ListView.Selected.Data` yourself.
 - The binding takes `OnColumnClick` (calling a previous handler) and restores it when freed: free the binding before the `TListView`, e.g. in `FormDestroy`.
+
+### Other list controls
+
+Same `Create(Self, Control)` / `Create(Control)`, `Apply`, `Selected`, `Select`, `Sort`, `SortOnColumnClick`.
+
+- **VCL `TStringGrid`** - `TTStringGridBinding<T>`, `[TBindColumn]` / `AddColumn` by position on the non-fixed columns (`ColCount - FixedCols`); rows go below the fixed rows. The titles are cells of the fixed row and the application writes them (`Grid.Cells[0, 0] := 'Date'`). An empty list leaves one empty row (`Selected` is nil); the grid always has a current row, so a `Select` with no match leaves it. A click on the fixed row sorts (`OnFixedCellClick`, `goFixedRowClick` turned on), no arrow.
+- **FMX `TStringGrid`** - `TTFmxStringGridBinding<T>`, `[TBindColumn]` / `AddColumn` by position on the `TStringColumn` items designed in the IDE (with their `Header`). A header click sorts (`OnHeaderClick`, `TGridOption.HeaderClick` turned on), no arrow.
+- **FMX `TListView`** - `TTFmxListViewBinding<T>`, bound **by name** to the objects of the item appearance, not by position:
+
+```delphi
+[TBindItem('CompanyName', 'Text')]          // standard appearance: Text, Detail
+[TBindItem('City', 'Detail')]
+CustomersListView: TListView;
+
+[TBindItem('CompanyName', 'Name')]          // dynamic appearance: object names
+[TBindItem('Balance', 'Balance', '#,##0.00')]
+AccountsListView: TListView;
+
+FBinding := TTFmxListViewBinding<TCustomer>.Create(Self, CustomersListView);
+// in code: FBinding.AddItem('City', 'Detail');
+```
+
+  Every name must be a visible object of the item appearance, otherwise `ETBindingItemNotFound` (`Detail` on an appearance without detail fails too). Text objects only. No headers: sort from code with `Sort(AColumn, ADescending)`, the column being the position of the `[TBindItem]`. Never use `[TBindColumn]` on an FMX `TListView`.
