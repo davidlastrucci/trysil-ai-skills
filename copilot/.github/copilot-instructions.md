@@ -669,8 +669,17 @@ when the relation is always needed and never NULL. If you do:
 - A NULL foreign key reads as 0 (empty object) and an update writes **0, not NULL**:
   never use an eager member for an optional relation.
 - `CloneEntity` and `TTSession<T>` copies carry a full copy of the related object.
-- Eager detail lists (`[TDetailColumn]` on a plain list) are not documented:
-  use `TTLazyList<T>`.
+- `CreateEntity` leaves it empty: it does not read a related entity with key 0.
+
+An **eager detail list** is `[TDetailColumn('ID', 'CustomerID')]` on a plain list
+(`FOrders: TTObjectList<TOrder>`) instead of a `TTLazyList<T>`: the details are
+read with the master. Default to `TTLazyList<T>`; if you use one:
+
+- The entity **creates the list (owning its items) and frees it**, as above.
+- Every master read runs **one more select** for its details.
+- The details are **not written** with the master: save them with their own calls.
+- `CloneEntity` and `TTSession<T>` copies carry a copy of every item; JSON writes
+  the array and reads it back into the list without touching the database.
 
 ## 7. TTSession<T> - Unit of Work (`Trysil.Session`)
 
