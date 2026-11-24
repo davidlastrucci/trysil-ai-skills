@@ -24,6 +24,7 @@ The `Trysil.Binding` package (requires `rtl`, `dbrtl`, `Trysil`; no `Vcl` or `Fm
 | `TTBindingConverterRegistry`, `TTBindingConverterClass` | `Trysil.Binding.Converter` |
 | `ETBindingPropertyNotFound`, `ETBindingConverterRequired`, `ETBindingLookupNotFound` | `Trysil.Binding.Exceptions` |
 | `TTDataset<T>`, `TTDatasetDetailGetter<M, D>` | `Trysil.Dataset` |
+| `[TDatasetField]` | `Trysil.Binding.Attributes` |
 | `TTPredicate<T>` | `Trysil.Generics.Collections` |
 | `TComparison<T>` | `System.Generics.Defaults` |
 | `TTLazyList<T>` | `Trysil.Lazy` |
@@ -116,6 +117,7 @@ FCustomers.Open;
 - One field per mapped column, **named after the column** (`FieldByName('CompanyName')`). Field types come from the database column, except a `Currency` member (`ftCurrency`) and a `TGUID` member (`ftGuid`).
 - A `TTLazy<T>` member is a field holding the related key; writing it changes the relation.
 - Primary key, `[TVersionColumn]` and change tracking columns are **read-only fields**.
+- A calculated property (not a column) becomes a **read-only field** only with `[TDatasetField]` (`Trysil.Binding.Attributes`), named after the property, read from the record or the copy being edited: `[TDatasetField] property Amount: Double read GetAmount;`. Never write an `OnCalcFields` that repeats a rule the entity already has. Types: integer, float, `Currency`, date/time, `Boolean`, string, or a `TTNullable<T>` of them; an object or list raises `ETException` at `Open`. The getter runs for every row shown.
 
 ### Editing
 
@@ -158,13 +160,13 @@ LCity := FCustomers.Lookup('ID', 42, 'City');   // Null when not found, cursor u
 
 ### Master and detail
 
-The detail rows are the `TTLazyList<D>` of the master, mapped with `[TDetailColumn]`. The master entity must **expose the `TTLazyList<D>` itself** as a property:
+The detail rows are the list a `[TDetailColumn]` of the master holds: a `TTLazyList<D>` or an eager list. The getter returns **the list the entity already exposes** (`TTList<D>`):
 
 ```delphi
 [TDetailColumn('ID', 'CategoryID')]
 FProducts: TTLazyList<TProduct>;
 ...
-property Products: TTLazyList<TProduct> read FProducts;
+property Products: TTList<TProduct> read GetProducts;   // result := FProducts.List
 ```
 
 ```delphi
@@ -172,14 +174,14 @@ FCategories := TTDataset<TCategory>.Create(FContext);
 FCategories.Open;
 
 FProducts := FCategories.CreateDetail<TProduct>(
-  function(const ACategory: TCategory): TTLazyList<TProduct>
+  function(const ACategory: TCategory): TTList<TProduct>
   begin
     result := ACategory.Products;
   end);
 FProducts.Open;
 ```
 
-- Returning anything but the mapped `TTLazyList<D>` raises `ETException` when the detail opens.
+- Returning a list that is not the list of a `[TDetailColumn]` raises `ETException` when the detail opens. The other details of the master are not loaded.
 - The detail follows the master: when the master moves, the detail posts its edit, **discards its changes not applied**, and shows the new list. Apply before moving to keep them.
 - `Insert` on the detail writes the master key into the detail column.
 - `ApplyUpdates` on the **master** writes the master and every open detail in one transaction. `ApplyUpdates` on the detail writes the detail only.
